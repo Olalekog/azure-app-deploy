@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+
+project     = "todoapp"
+environment = "production"
+location    = "eastus"
+
+admin_username       = "azureuser"
+admin_ssh_public_key = "ssh-ed25519 AAAA... your-public-key"
+
+frontend_instance_count = 2
+frontend_instance_max   = 6
+backend_instance_count  = 2
+backend_instance_max    = 6
+
+tags = {
+  project     = "todoapp"
+  environment = "production"
+}

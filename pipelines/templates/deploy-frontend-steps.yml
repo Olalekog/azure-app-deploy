@@ -1,0 +1,44 @@
+# Shared deploy steps for the frontend: upload the artifact already downloaded by the calling
+# deployment job, then redeploy it onto every running instance of the target environment's VMSS.
+# Expects $(azureServiceConnection), $(storageAccountName), $(resourceGroupName) and
+# $(frontendVmssName) from whichever variable group the calling stage loaded.
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Upload artifact to blob storage'
+    inputs:
+      azureSubscription: '$(azureServiceConnection)'
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        az storage blob upload \
+          --account-name "$(storageAccountName)" \
+          --auth-mode login \
+          --container-name frontend-releases \
+          --name latest.zip \
+          --file "$(Pipeline.Workspace)/frontendBuild/frontend-release/latest.zip" \
+          --overwrite
+
+  - task: AzureCLI@2
+    displayName: 'Redeploy on running instances'
+    inputs:
+      azureSubscription: '$(azureServiceConnection)'
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        ids=$(az vmss list-instances \
+          --resource-group "$(resourceGroupName)" \
+          --name "$(frontendVmssName)" \
+          --query "[].instanceId" -o tsv)
+        for id in $ids; do
+          echo "Redeploying instance $id"
+          az vmss run-command invoke \
+            --resource-group "$(resourceGroupName)" \
+            --name "$(frontendVmssName)" \
+            --instance-id "$id" \
+            --command-id RunShellScript \
+            --scripts "bash /opt/deploy/deploy-frontend.sh" \
+            --output none
+        done

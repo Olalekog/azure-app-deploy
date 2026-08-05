@@ -1,0 +1,35 @@
+# CI: builds the React app and publishes it as a pipeline artifact.
+# Create this as an Azure DevOps pipeline named "todoapp-frontend-build" -
+# frontend-release.yml references it by that exact name.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - frontend
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - task: NodeTool@0
+    inputs:
+      versionSpec: '20.x'
+
+  - script: |
+      set -euo pipefail
+      npm ci
+      npm run build
+    workingDirectory: frontend
+    displayName: 'npm ci && npm run build'
+
+  - script: |
+      set -euo pipefail
+      cd frontend/dist
+      zip -r "$(Build.ArtifactStagingDirectory)/latest.zip" .
+    displayName: 'Zip build output'
+
+  - publish: '$(Build.ArtifactStagingDirectory)/latest.zip'
+    artifact: frontend-release

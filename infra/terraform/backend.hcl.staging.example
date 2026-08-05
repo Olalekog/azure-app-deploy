@@ -1,0 +1,9 @@
+# Copy to backend.hcl (gitignored) and fill in, then:
+#   terraform init -backend-config=backend.hcl -reconfigure
+# Use a distinct `key` per environment so staging and production keep separate state files
+# in the same (or different) state storage account.
+
+resource_group_name  = "rg-tfstate"
+storage_account_name = "sttodotfstate<unique>"
+container_name       = "tfstate"
+key                  = "todoapp-staging.tfstate"

@@ -1,0 +1,56 @@
+# Shared steps: stage that environment's tfvars/backend config from Secure Files, install
+# Terraform, run init + plan, and publish the plan file for the matching apply stage to consume.
+# Expects $(azureServiceConnection) from whichever variable group the calling job loaded, and a
+# pipeline-level $(terraformVersion) variable.
+
+parameters:
+  - name: environmentName
+    type: string
+  - name: tfvarsSecureFile
+    type: string
+  - name: backendHclSecureFile
+    type: string
+  - name: artifactName
+    type: string
+
+steps:
+  - task: DownloadSecureFile@1
+    name: tfvarsFile
+    displayName: 'Download terraform.tfvars (${{ parameters.environmentName }})'
+    inputs:
+      secureFile: ${{ parameters.tfvarsSecureFile }}
+
+  - task: DownloadSecureFile@1
+    name: backendHclFile
+    displayName: 'Download backend.hcl (${{ parameters.environmentName }})'
+    inputs:
+      secureFile: ${{ parameters.backendHclSecureFile }}
+
+  - script: |
+      set -euo pipefail
+      curl -fsSL "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" -o /tmp/terraform.zip
+      sudo unzip -o /tmp/terraform.zip -d /usr/local/bin
+      terraform -version
+    displayName: 'Install Terraform'
+
+  - script: |
+      set -euo pipefail
+      cp "$(tfvarsFile.secureFilePath)" infra/terraform/terraform.tfvars
+      cp "$(backendHclFile.secureFilePath)" infra/terraform/backend.hcl
+    displayName: 'Stage tfvars and backend config'
+
+  - task: AzureCLI@2
+    displayName: 'terraform init && terraform plan'
+    inputs:
+      azureSubscription: '$(azureServiceConnection)'
+      scriptType: bash
+      workingDirectory: infra/terraform
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        terraform init -backend-config=backend.hcl -reconfigure -input=false
+        terraform plan -input=false -out=tfplan
+
+  - publish: infra/terraform/tfplan
+    artifact: ${{ parameters.artifactName }}
+    displayName: 'Publish plan file'

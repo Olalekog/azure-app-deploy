@@ -1,0 +1,36 @@
+# CI: packages the FastAPI app and publishes it as a pipeline artifact.
+# Create this as an Azure DevOps pipeline named "todoapp-backend-build" -
+# backend-release.yml references it by that exact name.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - backend
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.11'
+
+  - script: |
+      set -euo pipefail
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      python -m compileall app
+    workingDirectory: backend
+    displayName: 'Install deps and sanity-compile'
+
+  - script: |
+      set -euo pipefail
+      cd backend
+      zip -r "$(Build.ArtifactStagingDirectory)/latest.zip" app requirements.txt
+    displayName: 'Zip app + requirements.txt'
+
+  - publish: '$(Build.ArtifactStagingDirectory)/latest.zip'
+    artifact: backend-release

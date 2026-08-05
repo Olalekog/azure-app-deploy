@@ -1,0 +1,83 @@
+# CD: takes the artifact published by todoapp-frontend-build and rolls it out to staging first,
+# then production. Promotion to production requires manual approval, enforced two ways:
+#   1. A ManualValidation gate defined right here in YAML (the "WaitForApproval" job below) -
+#      this always pauses the pipeline before Production, regardless of how the Azure DevOps
+#      project is configured, and shows up in code review.
+#   2. An approval check configured on the "todoapp-production" Environment in Azure DevOps
+#      (Pipelines > Environments > todoapp-production > Approvals and checks) - this is the
+#      "real" RBAC-backed gate (restricts who's allowed to approve) but has to be set up once
+#      in the UI since it can't be expressed in YAML. Treat step 1 as a backstop, not a
+#      replacement, for this.
+#
+# Create this as an Azure DevOps pipeline named e.g. "todoapp-frontend-release". It has no
+# path/branch trigger of its own - it fires automatically whenever todoapp-frontend-build
+# completes (via the pipeline resource below).
+#
+# Requires two Azure DevOps variable groups (Pipelines > Library), one per environment, each with:
+#   azureServiceConnection - ARM service connection with Contributor on that environment's
+#                             resource group, and Storage Blob Data Contributor on its storage account
+#   resourceGroupName      - that environment's `terraform output resource_group_name`
+#   storageAccountName     - that environment's `terraform output storage_account_name`
+#   frontendVmssName       - that environment's `terraform output frontend_vmss_name`
+#
+#   todoapp-staging     -> staging environment's values
+#   todoapp-production  -> production environment's values
+#
+# Also requires two Azure DevOps Environments (Pipelines > Environments) named
+# "todoapp-staging" and "todoapp-production" - the deployment jobs below target them by name.
+
+trigger: none
+
+resources:
+  pipelines:
+    - pipeline: frontendBuild
+      source: todoapp-frontend-build
+      trigger: true
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: Staging
+    displayName: 'Deploy to staging'
+    jobs:
+      - deployment: DeployFrontendStaging
+        displayName: 'Deploy frontend (staging)'
+        environment: todoapp-staging
+        variables:
+          - group: todoapp-staging
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: frontendBuild
+                  artifact: frontend-release
+                - template: templates/deploy-frontend-steps.yml
+
+  - stage: Production
+    displayName: 'Deploy to production'
+    dependsOn: Staging
+    jobs:
+      - job: WaitForApproval
+        displayName: 'Manual approval to promote to production'
+        pool: server
+        timeoutInMinutes: 1440
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 1440
+            inputs:
+              instructions: 'Approve to deploy the frontend to PRODUCTION.'
+
+      - deployment: DeployFrontendProduction
+        displayName: 'Deploy frontend (production)'
+        dependsOn: WaitForApproval
+        environment: todoapp-production
+        variables:
+          - group: todoapp-production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: frontendBuild
+                  artifact: frontend-release
+                - template: templates/deploy-frontend-steps.yml

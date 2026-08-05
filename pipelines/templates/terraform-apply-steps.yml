@@ -1,0 +1,48 @@
+# Shared steps: download the plan file published by the matching plan stage and apply it
+# unmodified (never re-plan here - applying exactly what was reviewed is the point). Expects
+# $(azureServiceConnection) from whichever variable group the calling job loaded, and a
+# pipeline-level $(terraformVersion) variable.
+
+parameters:
+  - name: environmentName
+    type: string
+  - name: backendHclSecureFile
+    type: string
+  - name: artifactName
+    type: string
+
+steps:
+  - download: current
+    artifact: ${{ parameters.artifactName }}
+    displayName: 'Download plan file'
+
+  - task: DownloadSecureFile@1
+    name: backendHclFile
+    displayName: 'Download backend.hcl (${{ parameters.environmentName }})'
+    inputs:
+      secureFile: ${{ parameters.backendHclSecureFile }}
+
+  - script: |
+      set -euo pipefail
+      curl -fsSL "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" -o /tmp/terraform.zip
+      sudo unzip -o /tmp/terraform.zip -d /usr/local/bin
+      terraform -version
+    displayName: 'Install Terraform'
+
+  - script: |
+      set -euo pipefail
+      cp "$(backendHclFile.secureFilePath)" infra/terraform/backend.hcl
+      cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" infra/terraform/tfplan
+    displayName: 'Stage backend config and plan file'
+
+  - task: AzureCLI@2
+    displayName: 'terraform init && terraform apply'
+    inputs:
+      azureSubscription: '$(azureServiceConnection)'
+      scriptType: bash
+      workingDirectory: infra/terraform
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        terraform init -backend-config=backend.hcl -reconfigure -input=false
+        terraform apply -input=false tfplan
