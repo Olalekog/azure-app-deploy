@@ -137,25 +137,29 @@ to its App ID), then:
 az ad sp show --id <appId> --query id -o tsv
 ```
 
-### 5. Library variable groups and secrets (Terraform-managed)
+### 5. Library, Key Vault, environments, approval gates, and pipelines (Terraform-managed)
 
-Everything under **Pipelines > Library** — all four variable groups and the Key Vault secrets
-backing one of them — is created by a third Terraform stack,
-[infra/terraform-devops/](infra/terraform-devops/), rather than by hand or via Secure File
-uploads. Two of the four groups read their values out of the staging and production app infra's
-remote state, so **both environments from step 3 must already be applied** before this stack can
-be.
+Everything under **Pipelines > Library**, **Pipelines > Environments**, and **Pipelines** itself
+(the six pipeline definitions) is created by a third Terraform stack,
+[infra/terraform-devops/](infra/terraform-devops/) — no manual UI clicking beyond step 4. Two of
+its variable groups read their values out of the staging and production app infra's remote
+state, so **both environments from step 3 must already be applied** before this stack can be.
 
 ```bash
 cd infra/terraform-devops
 cp terraform.tfvars.example terraform.tfvars   # already has azdo_project_name = "training-proj"
                                                 # and staging_tfvars/production_tfvars matching
                                                 # infra/terraform's tfvars - fill in
-                                                # key_vault_name (must be globally unique) and
-                                                # azure_training_sp_object_id (from step 4), and
-                                                # keep staging_tfvars/production_tfvars in sync
-                                                # with infra/terraform/terraform.tfvars.*.example
-                                                # by hand if either ever changes
+                                                # key_vault_name (must be globally unique),
+                                                # azure_training_sp_object_id (from step 4),
+                                                # github_personal_access_token (repo scope, or
+                                                # fine-grained Contents:read on
+                                                # Olalekog/azure-app-deploy), and
+                                                # approver_object_id (yours: az ad signed-in-user
+                                                # show --query id -o tsv). Keep
+                                                # staging_tfvars/production_tfvars in sync with
+                                                # infra/terraform/terraform.tfvars.*.example by
+                                                # hand if either ever changes
 cp backend.hcl.example backend.hcl             # already points at Training-Batch-6.23 / olalekog
 
 export AZDO_ORG_SERVICE_URL="https://dev.azure.com/324DSTraining"
@@ -183,23 +187,33 @@ needs):
   exists (they're its outputs), but these are needed *to create* it, so a circular dependency
   would result from merging them.
 - A new Key Vault (`key_vault_name`, RBAC-authorized, in `Training-Batch-6.23` by default)
-  holding two secrets: `azureServiceConnection` (value `AzureTraining`) and
-  `azureTrainingSpObjectId` (value `azure_training_sp_object_id` from your tfvars — persisted
-  here so nothing downstream has to re-discover that GUID by hand) — plus a **Key Vault Secrets
-  User** role assignment so Azure DevOps can actually read them. Since the vault uses RBAC
-  authorization, the identity running `terraform apply` also needs a **Key Vault Secrets
-  Officer** grant on it to write those secrets in the same apply — the stack creates that
-  role assignment itself and pauses 30s for it to propagate before writing them, so this
-  should just work, but if the very first apply 403s on a secret, it's this propagation delay
-  and a second `terraform apply` will succeed. Note `azure_training_sp_object_id` itself can't
-  come *from* this vault — it's what grants access to the vault in the first place, so it has to
-  stay a plain Terraform input.
-- `todoapp-azure-connection` — the Key Vault-linked variable group exposing both secrets as
-  Library variables (`azureServiceConnection`, `azureTrainingSpObjectId`). Shared by both
-  environments since neither value differs between them.
+  holding three secrets: `azureServiceConnection` (value `AzureTraining`), `azureTrainingSpObjectId`
+  (persisted so nothing downstream has to re-discover that GUID by hand), and
+  `azdoOrgServiceUrl` — plus a **Key Vault Secrets User** role assignment so Azure DevOps can
+  actually read them. Since the vault uses RBAC authorization, the identity running
+  `terraform apply` also needs a **Key Vault Secrets Officer** grant on it to write those
+  secrets in the same apply — the stack creates that role assignment itself and pauses 30s for
+  it to propagate before writing them, so this should just work, but if the very first apply
+  403s on a secret, it's this propagation delay and a second `terraform apply` will succeed.
+  Note `azure_training_sp_object_id` itself can't come *from* this vault — it's what grants
+  access to the vault in the first place, so it has to stay a plain Terraform input.
+- `todoapp-azure-connection` — the Key Vault-linked variable group exposing all three secrets as
+  Library variables. Shared by both environments since none of the values differ between them.
 - **Storage Blob Data Contributor** on the `AzureTraining` connection's identity, scoped to each
   environment's two release containers specifically — not the whole shared account, since it
   likely holds other people's training data too.
+- A **GitHub service connection** (PAT-based, from `github_personal_access_token`) — needed for
+  Azure DevOps to read this repo and wire up push-trigger webhooks when creating pipelines from
+  it, even though the repo is public. Doesn't need any Entra ID permissions, unlike the
+  `AzureTraining` connection, since it's just a GitHub credential.
+- All **six pipeline definitions**, pointed at their YAML files in this repo on `main`.
+- The `todoapp-staging`, `todoapp-production`, and `todoapp-devops` **Environments**, plus an
+  **approval check** on the latter two restricted to `approver_object_id`. This is the gate that
+  actually restricts *who* can promote to production or change Library/Key Vault config. It
+  complements, not replaces, the `ManualValidation` task each pipeline's YAML already runs before
+  those stages — that backstop always pauses for anyone with pipeline access regardless of how
+  Azure DevOps is configured, while this approval check is what narrows "anyone" down to
+  `approver_object_id` specifically.
 
 Note the self-reference: the `AzureTraining` connection both authorizes the Key Vault link *and*
 is the value the resulting variable resolves to. Those are two independent uses of it (one is
@@ -207,65 +221,35 @@ is the value the resulting variable resolves to. Those are two independent uses 
 commands run against"), so there's no actual circularity — just re-use of the same connection.
 
 The PAT and org URL only need to be exported in your shell for this one apply — nothing in this
-repo stores them.
+repo stores them. Once this succeeds, all six pipelines exist and are ready to run — no separate
+"create the pipeline" step in the Azure DevOps UI.
 
-### 6. Pipeline for ongoing Library/Key Vault changes
+### 6. Pipeline for ongoing Library/Key Vault/pipeline changes
 
-Step 5's local apply is the one-time bootstrap — it's what creates `todoapp-azure-connection`,
-so nothing in Azure DevOps has anything to authenticate with before that's done. After it, an
-optional pipeline (`devops-deploy.yml`) can take over for *ongoing* changes to
-`infra/terraform-devops` (e.g. adding a new environment, changing instance sizes) instead of
-running `terraform apply` locally every time:
+Step 5's local apply is the one-time bootstrap — it's what creates `todoapp-azure-connection` and
+the pipelines themselves, so nothing in Azure DevOps has anything to authenticate with (or run)
+before that's done. After it, `todoapp-devops-deploy` (already created by step 5) can take over
+for *ongoing* changes to `infra/terraform-devops` (e.g. adding a new environment, changing
+instance sizes, adding a new approver) instead of running `terraform apply` locally every time.
+
+Two things remain manual for this specific pipeline — not because they're hard, but because
+automating them isn't safe or possible with what's available:
 
 1. Upload a **Secure File** (Pipelines > Library > Secure files) named `todoapp-devops.tfvars`,
-   containing your filled-in `infra/terraform-devops/terraform.tfvars` — this stack's own tfvars
+   containing your filled-in `infra/terraform-devops/terraform.tfvars`. This stack's own tfvars
    can't come from Library variables the way `infra-deploy.yml`'s do, since it's what creates
-   those variables; that would be circular. A Secure File is the exception here, not a step
-   backward.
+   those variables — that would be circular. There's also no Terraform resource for Secure Files
+   in this provider at all, so this can't be automated away, only worked around with something
+   fragile (e.g. a raw REST API call via a provisioner) that isn't worth it for a pipeline that
+   runs rarely.
 2. Grant the project's **Build Service** identity **Administrator** on Library security
    (Project Settings > Pipelines > Library > Security) — the pipeline authenticates the
    `azuredevops` provider with `$(System.AccessToken)` (a short-lived, pipeline-scoped token)
    instead of a stored PAT, and that identity needs permission to create/update variable groups
-   for it to actually work.
-3. Create the `todoapp-devops` Environment (see step 7) — applying here touches RBAC and secrets,
-   not just app infra, so it's gated the same way production infra applies are.
-
-### 7. Azure DevOps environments and approval gate
-
-Promotion to production requires manual approval, enforced two ways — do both, they're not
-redundant:
-
-- **Enforced in YAML, no setup needed.** Each release pipeline's `Production` stage runs a
-  `WaitForApproval` job (a `ManualValidation@0` task on the agentless `server` pool) before the
-  actual deploy job. This always pauses the run and waits for anyone with pipeline access to
-  click Resume — it works out of the box, but it isn't restricted to specific people.
-- **RBAC-restricted, requires one-time setup.** **Pipelines > Environments > New environment**,
-  create `todoapp-staging`, `todoapp-production`, and `todoapp-devops` (resource type "None" —
-  these are just approval/audit anchors, not Kubernetes/VM resources). On `todoapp-production`
-  and `todoapp-devops`, add an **Approval check** (Approvals and checks > + > Approvals) naming
-  the specific people/group allowed to approve. This is the gate that actually restricts *who*
-  can promote to production or change Library/Key Vault config — set it up before relying on
-  either pipeline for anything real.
-
-### 8. Create the pipelines
-
-Create six pipelines in Azure DevOps, **build pipelines before their release pipeline** — each
-release pipeline's `resources.pipelines.source` references its build pipeline by name, so the
-build pipeline must already exist under that exact name first. `todoapp-infra-deploy` and
-`todoapp-devops-deploy` have no such dependency, but each needs its own prerequisites from steps
-5–6 in place before its first real run.
-
-| Order | Pipeline name (must match exactly) | YAML file |
-| --- | --- | --- |
-| 1 | `todoapp-frontend-build` | `pipelines/frontend-build.yml` |
-| 2 | `todoapp-frontend-release` | `pipelines/frontend-release.yml` |
-| 3 | `todoapp-backend-build` | `pipelines/backend-build.yml` |
-| 4 | `todoapp-backend-release` | `pipelines/backend-release.yml` |
-| — | `todoapp-infra-deploy` | `pipelines/infra-deploy.yml` |
-| — | `todoapp-devops-deploy` | `pipelines/devops-deploy.yml` |
-
-If you name the build pipelines something other than `todoapp-frontend-build` /
-`todoapp-backend-build`, update the `source:` value in the corresponding `*-release.yml` to match.
+   for it to actually work. This is technically automatable via `azuredevops_security_permissions`,
+   but doing so needs the exact security-namespace/token values Azure DevOps uses internally for
+   Library, which aren't safe to guess — getting a security-permission grant wrong is worse than
+   leaving a one-time UI toggle manual.
 
 ## Ongoing workflow
 
@@ -322,3 +306,8 @@ instance's first boot — no pipeline run needed.
   there (or added later by someone else) is in the same routing domain unless VM-VNET has its own
   additional segmentation. The NSGs here only control what reaches *this app's* subnets, not what
   those subnets could reach elsewhere in VM-VNET.
+- **Pipeline definitions are Terraform-managed — edits in the Azure DevOps UI will drift or get
+  reverted.** Since `infra/terraform-devops` owns all six pipelines (`azuredevops_build_definition`),
+  changing a pipeline's name, YAML path, or trigger config by hand in the ADO UI creates a diff
+  the next `terraform plan` will want to undo. Change `pipelines/*.yml` and/or
+  `infra/terraform-devops/pipelines.tf` instead, then re-apply.

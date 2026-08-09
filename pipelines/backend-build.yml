@@ -2,73 +2,70 @@
 # release-ready artifact. Create this as an Azure DevOps pipeline named "todoapp-backend-build" -
 # backend-release.yml references it by that exact name.
 #
-# Build and Test run in parallel (dependsOn: [] on Test) since neither needs the other's output -
-# both just need the checked-out source plus their own dependency install. PublishArtifact waits
-# for both, so a broken import or a failing test blocks the artifact from ever being published.
+# Runs strictly sequentially: Build -> Test -> PublishArtifact. PublishArtifact only runs after
+# Test passes, so a broken import or a failing test blocks the artifact from ever being published.
 
 trigger:
   branches:
     include:
-      - main
+    - main
   paths:
     include:
-      - backend
+    - backend
 
 stages:
-  - stage: Build
-    displayName: 'Build'
-    jobs:
-      - job: Build
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: '3.11'
+- stage: Build
+  displayName: 'Build'
+  jobs:
+  - job: Build
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.11'
 
-          - script: |
-              set -euo pipefail
-              python -m pip install --upgrade pip
-              pip install -r requirements.txt
-              python -c "import app.main"
-            workingDirectory: backend
-            displayName: 'Install dependencies and sanity-import'
+    - script: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        python -c "import app.main"
+      workingDirectory: backend
+      displayName: 'Install dependencies and sanity-import'
 
-  - stage: Test
-    displayName: 'Test'
-    dependsOn: []
-    jobs:
-      - job: Test
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: '3.11'
+- stage: Test
+  displayName: 'Test'
+  dependsOn: Build
+  jobs:
+  - job: Test
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.11'
 
-          - script: |
-              set -euo pipefail
-              python -m pip install --upgrade pip
-              pip install -r requirements-dev.txt
-              pytest
-            workingDirectory: backend
-            displayName: 'Install dependencies and run pytest'
+    - script: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+        pytest
+      workingDirectory: backend
+      displayName: 'Install dependencies and run pytest'
 
-  - stage: PublishArtifact
-    displayName: 'Publish artifact'
-    dependsOn:
-      - Build
-      - Test
-    jobs:
-      - job: Publish
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - script: |
-              set -euo pipefail
-              cd backend
-              zip -r "$(Build.ArtifactStagingDirectory)/latest.zip" app requirements.txt
-            displayName: 'Zip app + requirements.txt'
+- stage: PublishArtifact
+  displayName: 'Publish artifact'
+  dependsOn: Test
+  jobs:
+  - job: Publish
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - script: |
+        set -euo pipefail
+        cd backend
+        zip -r "$(Build.ArtifactStagingDirectory)/latest.zip" app requirements.txt
+      displayName: 'Zip app + requirements.txt'
 
-          - publish: '$(Build.ArtifactStagingDirectory)/latest.zip'
-            artifact: backend-release
+    - publish: '$(Build.ArtifactStagingDirectory)/latest.zip'
+      artifact: backend-release

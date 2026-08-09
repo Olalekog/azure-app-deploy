@@ -13,6 +13,15 @@ key_vault_name = "<key-vault-name>"
 # (appId is on the service connection's "Manage Service Principal" link in Azure DevOps)
 azure_training_sp_object_id = "<object-id>"
 
+# GitHub PAT (repo scope, or fine-grained Contents:read on Olalekog/azure-app-deploy) - used to
+# create the GitHub service connection Azure DevOps needs to read this repo. Not published to
+# Library anywhere, only this stack uses it.
+github_personal_access_token = "<github-pat>"
+
+# Your own Entra ID object ID - approves the todoapp-production / todoapp-devops gates. Find via:
+#   az ad signed-in-user show --query id -o tsv
+approver_object_id = "<your-object-id>"
+
 # Published to todoapp-staging-tfvars / todoapp-production-tfvars so infra-deploy.yml can
 # reconstruct infra/terraform/terraform.tfvars - keep these in sync with
 # infra/terraform/terraform.tfvars.staging.example / .production.example by hand, there's no

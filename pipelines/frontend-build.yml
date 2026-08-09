@@ -2,78 +2,75 @@
 # Create this as an Azure DevOps pipeline named "todoapp-frontend-build" -
 # frontend-release.yml references it by that exact name.
 #
-# Build and Test run in parallel (dependsOn: [] on Test) since the test suite runs against
-# source, not the built dist/ output - neither stage needs the other's result. PublishArtifact
-# waits for both and reuses Build's dist/ output rather than rebuilding, so a failing test blocks
+# Runs strictly sequentially: Build -> Test -> PublishArtifact. PublishArtifact reuses Build's
+# dist/ output rather than rebuilding, and only runs after Test passes, so a failing test blocks
 # the artifact from ever being published.
 
 trigger:
   branches:
     include:
-      - main
+    - main
   paths:
     include:
-      - frontend
+    - frontend
 
 stages:
-  - stage: Build
-    displayName: 'Build'
-    jobs:
-      - job: Build
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - task: NodeTool@0
-            inputs:
-              versionSpec: '20.x'
+- stage: Build
+  displayName: 'Build'
+  jobs:
+  - job: Build
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '20.x'
 
-          - script: |
-              set -euo pipefail
-              npm ci
-              npm run build
-            workingDirectory: frontend
-            displayName: 'npm ci && npm run build'
+    - script: |
+        set -euo pipefail
+        npm install
+        npm run build
+      workingDirectory: frontend
+      displayName: 'npm install && npm run build'
 
-          - publish: frontend/dist
-            artifact: frontend-dist
+    - publish: frontend/dist
+      artifact: frontend-dist
 
-  - stage: Test
-    displayName: 'Test'
-    dependsOn: []
-    jobs:
-      - job: Test
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - task: NodeTool@0
-            inputs:
-              versionSpec: '20.x'
+- stage: Test
+  displayName: 'Test'
+  dependsOn: Build
+  jobs:
+  - job: Test
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '20.x'
 
-          - script: |
-              set -euo pipefail
-              npm ci
-              npm run test
-            workingDirectory: frontend
-            displayName: 'npm ci && npm run test'
+    - script: |
+        set -euo pipefail
+        npm install
+        npm run test
+      workingDirectory: frontend
+      displayName: 'npm install && npm run test'
 
-  - stage: PublishArtifact
-    displayName: 'Publish artifact'
-    dependsOn:
-      - Build
-      - Test
-    jobs:
-      - job: Publish
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - download: current
-            artifact: frontend-dist
+- stage: PublishArtifact
+  displayName: 'Publish artifact'
+  dependsOn: Test
+  jobs:
+  - job: Publish
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - download: current
+      artifact: frontend-dist
 
-          - script: |
-              set -euo pipefail
-              cd "$(Pipeline.Workspace)/frontend-dist"
-              zip -r "$(Build.ArtifactStagingDirectory)/latest.zip" .
-            displayName: 'Zip build output'
+    - script: |
+        set -euo pipefail
+        cd "$(Pipeline.Workspace)/frontend-dist"
+        zip -r "$(Build.ArtifactStagingDirectory)/latest.zip" .
+      displayName: 'Zip build output'
 
-          - publish: '$(Build.ArtifactStagingDirectory)/latest.zip'
-            artifact: frontend-release
+    - publish: '$(Build.ArtifactStagingDirectory)/latest.zip'
+      artifact: frontend-release

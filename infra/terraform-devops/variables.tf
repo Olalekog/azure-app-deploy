@@ -51,6 +51,29 @@ variable "tags" {
   }
 }
 
+variable "github_repo_id" {
+  description = "GitHub repo (owner/name) the pipelines are defined in."
+  type        = string
+  default     = "Olalekog/azure-app-deploy"
+}
+
+variable "github_branch_name" {
+  description = "Branch the pipelines trigger from and read YAML definitions from."
+  type        = string
+  default     = "main"
+}
+
+variable "github_personal_access_token" {
+  description = "GitHub PAT (repo scope, or fine-grained Contents:read) used to create the GitHub service connection Azure DevOps needs to read this repo and set up push-trigger webhooks. Not published anywhere - only infra/terraform-devops itself uses it."
+  type        = string
+  sensitive   = true
+}
+
+variable "approver_object_id" {
+  description = "Entra ID object ID of whoever approves the todoapp-production / todoapp-devops approval checks. Find your own via: az ad signed-in-user show --query id -o tsv"
+  type        = string
+}
+
 # Published into todoapp-staging-tfvars / todoapp-production-tfvars (tfvars_groups.tf) so
 # infra-deploy.yml can reconstruct infra/terraform/terraform.tfvars without Secure Files. These
 # are *inputs* to the app infra (needed to create it), unlike todoapp-staging/todoapp-production
