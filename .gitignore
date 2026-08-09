@@ -5,8 +5,10 @@ frontend/dist/
 # Python / backend
 backend/__pycache__/
 backend/app/__pycache__/
+backend/tests/__pycache__/
 backend/.venv/
 backend/venv/
+backend/.pytest_cache/
 *.pyc
 
 # Runtime data
@@ -19,6 +21,13 @@ infra/terraform/*.tfstate.backup
 infra/terraform/terraform.tfvars
 infra/terraform/backend.hcl
 infra/terraform/crash.log
+
+infra/terraform-devops/.terraform/
+infra/terraform-devops/*.tfstate
+infra/terraform-devops/*.tfstate.backup
+infra/terraform-devops/terraform.tfvars
+infra/terraform-devops/backend.hcl
+infra/terraform-devops/crash.log
 
 # Editors / OS
 .DS_Store

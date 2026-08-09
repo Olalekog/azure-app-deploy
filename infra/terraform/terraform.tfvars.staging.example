@@ -1,8 +1,19 @@
 # Copy to terraform.tfvars (gitignored) and fill in.
+# `az account set --subscription "AzureTraining"` before running any terraform command -
+# these values live in that subscription.
 
 project     = "todoapp"
 environment = "staging"
-location    = "eastus"
+
+existing_resource_group_name  = "Training-Batch-6.23"
+existing_storage_account_name = "olalekog"
+existing_vnet_name            = "VM-VNET"
+
+# VM-VNET's address space is 10.0.0.0/16; it already has a "default" subnet at 10.0.0.0/24, so
+# staging/production carve out /24s after that, non-overlapping with each other.
+frontend_subnet_prefix = ["10.0.1.0/24"]
+backend_subnet_prefix  = ["10.0.2.0/24"]
+backend_lb_private_ip  = "10.0.2.4"
 
 admin_username       = "azureuser"
 admin_ssh_public_key = "ssh-ed25519 AAAA... your-public-key"

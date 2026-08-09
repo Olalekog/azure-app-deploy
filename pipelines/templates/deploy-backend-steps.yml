@@ -1,7 +1,9 @@
 # Shared deploy steps for the backend: upload the artifact already downloaded by the calling
 # deployment job, then redeploy it onto every running instance of the target environment's VMSS.
-# Expects $(azureServiceConnection), $(storageAccountName), $(resourceGroupName) and
-# $(backendVmssName) from whichever variable group the calling stage loaded.
+# Expects $(azureServiceConnection), $(storageAccountName), $(resourceGroupName),
+# $(backendVmssName) and $(backendReleaseContainer) from whichever variable group the calling
+# stage loaded - the container name is environment-specific since staging and production share
+# one storage account (see terraform output backend_release_container).
 
 steps:
   - task: AzureCLI@2
@@ -15,7 +17,7 @@ steps:
         az storage blob upload \
           --account-name "$(storageAccountName)" \
           --auth-mode login \
-          --container-name backend-releases \
+          --container-name "$(backendReleaseContainer)" \
           --name latest.zip \
           --file "$(Pipeline.Workspace)/backendBuild/backend-release/latest.zip" \
           --overwrite

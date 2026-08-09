@@ -9,8 +9,9 @@
 # matching Plan stage - it never re-plans - so what gets approved is what gets applied.
 #
 # Create this as an Azure DevOps pipeline named e.g. "todoapp-infra-deploy". It reuses the
-# "todoapp-staging" / "todoapp-production" variable groups and Environments already set up for
-# the app pipelines (just needs azureServiceConnection from those groups).
+# "todoapp-staging" / "todoapp-production" variable groups, the shared Key Vault-linked
+# "todoapp-azure-connection" group (see azureServiceConnection in frontend-release.yml's header),
+# and the Environments already set up for the app pipelines.
 #
 # Additionally requires four Secure Files (Pipelines > Library > Secure files) - these carry
 # real values that must never be committed to git, mirroring the local
@@ -20,104 +21,111 @@
 #   todoapp-production.tfvars       - filled-in copy of terraform.tfvars.production.example
 #   todoapp-production-backend.hcl  - filled-in copy of backend.hcl.production.example
 #
-# Bootstrap note: this pipeline manages ongoing infra changes. The very first apply (which
-# creates the resource group the service connection is scoped to) still has to be run locally -
-# see DEPLOY.md - unless you scope the service connection at the subscription level instead.
+# Bootstrap note: unlike a setup where Terraform creates its own resource group, this stack
+# deploys into a pre-existing resource group and reuses a pre-existing storage account (see
+# infra/terraform/variables.tf), so there's no chicken-and-egg problem scoping the service
+# connection - it can point at that resource group from the start. The one manual prerequisite
+# is the "tfstate" container existing in that storage account before the first Plan stage runs:
+#   az storage container create -n tfstate --account-name <existing_storage_account_name>
 
 trigger:
   branches:
     include:
-      - main
+    - main
   paths:
     include:
-      - infra/terraform
+    - infra/*
 
 variables:
   terraformVersion: '1.10.4'
 
 stages:
-  - stage: PlanStaging
-    displayName: 'Plan (staging)'
-    jobs:
-      - job: Plan
-        pool:
-          vmImage: ubuntu-latest
-        variables:
-          - group: todoapp-staging
-        steps:
-          - template: templates/terraform-plan-steps.yml
+- stage: PlanStaging
+  displayName: 'Plan (staging)'
+  jobs:
+  - job: Plan
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+    - group: todoapp-staging
+    - group: todoapp-azure-connection
+    steps:
+    - template: templates/terraform-plan-steps.yml
+      parameters:
+        environmentName: staging
+        tfvarsSecureFile: todoapp-staging.tfvars
+        backendHclSecureFile: todoapp-staging-backend.hcl
+        artifactName: staging-tfplan
+
+- stage: ApplyStaging
+  displayName: 'Apply (staging)'
+  dependsOn: PlanStaging
+  jobs:
+  - deployment: Apply
+    displayName: 'Apply (staging)'
+    environment: todoapp-staging
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+    - group: todoapp-staging
+    - group: todoapp-azure-connection
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-apply-steps.yml
             parameters:
               environmentName: staging
-              tfvarsSecureFile: todoapp-staging.tfvars
               backendHclSecureFile: todoapp-staging-backend.hcl
               artifactName: staging-tfplan
 
-  - stage: ApplyStaging
-    displayName: 'Apply (staging)'
-    dependsOn: PlanStaging
-    jobs:
-      - deployment: Apply
-        displayName: 'Apply (staging)'
-        environment: todoapp-staging
-        pool:
-          vmImage: ubuntu-latest
-        variables:
-          - group: todoapp-staging
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - template: templates/terraform-apply-steps.yml
-                  parameters:
-                    environmentName: staging
-                    backendHclSecureFile: todoapp-staging-backend.hcl
-                    artifactName: staging-tfplan
+- stage: PlanProduction
+  displayName: 'Plan (production)'
+  dependsOn: ApplyStaging
+  jobs:
+  - job: Plan
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+    - group: todoapp-production
+    - group: todoapp-azure-connection
+    steps:
+    - template: templates/terraform-plan-steps.yml
+      parameters:
+        environmentName: production
+        tfvarsSecureFile: todoapp-production.tfvars
+        backendHclSecureFile: todoapp-production-backend.hcl
+        artifactName: production-tfplan
 
-  - stage: PlanProduction
-    displayName: 'Plan (production)'
-    dependsOn: ApplyStaging
-    jobs:
-      - job: Plan
-        pool:
-          vmImage: ubuntu-latest
-        variables:
-          - group: todoapp-production
-        steps:
-          - template: templates/terraform-plan-steps.yml
+- stage: ApplyProduction
+  displayName: 'Apply (production)'
+  dependsOn: PlanProduction
+  jobs:
+  - job: WaitForApproval
+    displayName: 'Manual approval to apply to production'
+    pool: server
+    timeoutInMinutes: 1440
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+      inputs:
+        instructions: 'Review the PlanProduction stage logs, then approve to apply Terraform to PRODUCTION infrastructure.'
+
+  - deployment: Apply
+    displayName: 'Apply (production)'
+    dependsOn: WaitForApproval
+    environment: todoapp-production
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+    - group: todoapp-production
+    - group: todoapp-azure-connection
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/terraform-apply-steps.yml
             parameters:
               environmentName: production
-              tfvarsSecureFile: todoapp-production.tfvars
               backendHclSecureFile: todoapp-production-backend.hcl
               artifactName: production-tfplan
-
-  - stage: ApplyProduction
-    displayName: 'Apply (production)'
-    dependsOn: PlanProduction
-    jobs:
-      - job: WaitForApproval
-        displayName: 'Manual approval to apply to production'
-        pool: server
-        timeoutInMinutes: 1440
-        steps:
-          - task: ManualValidation@0
-            timeoutInMinutes: 1440
-            inputs:
-              instructions: 'Review the PlanProduction stage logs, then approve to apply Terraform to PRODUCTION infrastructure.'
-
-      - deployment: Apply
-        displayName: 'Apply (production)'
-        dependsOn: WaitForApproval
-        environment: todoapp-production
-        pool:
-          vmImage: ubuntu-latest
-        variables:
-          - group: todoapp-production
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - template: templates/terraform-apply-steps.yml
-                  parameters:
-                    environmentName: production
-                    backendHclSecureFile: todoapp-production-backend.hcl
-                    artifactName: production-tfplan

@@ -27,10 +27,23 @@ pulls `latest.zip` from its container via managed identity (using `azcopy login 
 first boot (cloud-init) and again whenever the release pipeline calls `az vmss run-command invoke`
 after a new upload.
 
-Staging and production are two independent copies of the same Terraform stack (separate resource
-groups, VMSS, load balancers, storage accounts — nothing is shared), distinguished by the
-`environment` variable. Steps below are written generically as "per environment" — do them once
-for staging and once for production.
+Staging and production are two independent applies of the same Terraform stack, distinguished by
+the `environment` variable — but in this deployment both share **one pre-existing resource group,
+one pre-existing storage account, and one pre-existing VNet** (a training-subscription
+constraint: no permission to create new resource groups, storage accounts, or VNets). Terraform
+reads all three as data sources rather than creating them. Everything that *is* Terraform-managed
+(subnets, NSGs, LBs, VMSS, the Azure Files share, the release blob containers) is named — and, for
+subnets, address-ranged — per environment so staging and production never collide inside that
+shared VNet/account/RG — e.g. `vmss-frontend-todoapp-staging` vs `vmss-frontend-todoapp-production`,
+`frontend-releases-staging` vs `frontend-releases-production`, and non-overlapping subnet CIDRs
+carved out of the shared VNet's address space. Steps below are written generically as "per
+environment" — do them once for staging and once for production.
+
+Subscription: **AzureTraining**. Resource group: **Training-Batch-6.23**. Storage account:
+**olalekog**. VNet: **VM-VNET**. Azure DevOps project:
+**[training-proj](https://dev.azure.com/324DSTraining/training-proj)** (org `324DSTraining`). Run
+`az account set --subscription "AzureTraining"` before any local `az`/`terraform` command —
+everything below assumes that context is already selected.
 
 The infrastructure itself has its own pipeline (`infra-deploy.yml`), separate from the app
 build/release pipelines — a Terraform apply can destroy or replace real resources, which is a
@@ -44,17 +57,16 @@ approved is what gets applied.
 
 ### 1. Terraform remote state
 
-Create a storage account for state (outside Terraform, since it must exist before `init`). One
-state storage account can hold both environments' state files (they use different blob names).
+State lives in the existing storage account, in its own container — this only needs a container
+created within the account you already have, not a new resource group or storage account:
 
 ```bash
-az group create -n rg-tfstate -l eastus
-az storage account create -n sttodotfstate<unique> -g rg-tfstate -l eastus --sku Standard_LRS
-az storage container create -n tfstate --account-name sttodotfstate<unique>
+az storage container create -n tfstate --account-name olalekog
 ```
 
-For each environment, copy the matching example to `infra/terraform/backend.hcl` and fill in the
-storage account name — note the `key` differs per environment so state doesn't collide:
+For each environment, copy the matching example to `infra/terraform/backend.hcl` — both already
+point at `Training-Batch-6.23` / `olalekog`, only the `key` differs per environment so state
+doesn't collide:
 
 - `backend.hcl.staging.example` → `backend.hcl` (key `todoapp-staging.tfstate`)
 - `backend.hcl.production.example` → `backend.hcl` (key `todoapp-production.tfstate`)
@@ -66,9 +78,22 @@ For each environment, copy the matching example to `infra/terraform/terraform.tf
 - `terraform.tfvars.staging.example` → `terraform.tfvars`
 - `terraform.tfvars.production.example` → `terraform.tfvars`
 
-and set `admin_ssh_public_key` to a real SSH public key (instances have no public IP — access is
-via `az vmss run-command invoke` or Azure Bastion, but the scale set resource still requires a
-key).
+Both already set `existing_resource_group_name = "Training-Batch-6.23"`,
+`existing_storage_account_name = "olalekog"`, and `existing_vnet_name = "VM-VNET"` — but you still
+need to fill in `frontend_subnet_prefix`, `backend_subnet_prefix`, and `backend_lb_private_ip` in
+**both** files with real, non-overlapping CIDRs (there are no defaults for these on purpose, since
+guessing wrong here fails the apply or, worse, silently collides with something already in
+VM-VNET). Check the VNet's actual address space first:
+
+```bash
+az network vnet show --name VM-VNET -g Training-Batch-6.23 --query addressSpace -o jsonc
+```
+
+then pick two /24s (or whatever size you need) per environment that fit inside it and don't
+overlap each other — staging and production share this one VNet now, unlike the resource group
+and storage account where per-environment names are always in different sub-resources. Also set
+`admin_ssh_public_key` to a real SSH public key (instances have no public IP — access is via
+`az vmss run-command invoke` or Azure Bastion, but the scale set resource still requires a key).
 
 ### 3. Provision infrastructure
 
@@ -78,47 +103,98 @@ Terraform at that environment's state file):
 
 ```bash
 cd infra/terraform
-az login
+az account set --subscription "AzureTraining"
 terraform init -backend-config=backend.hcl -reconfigure
 terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
 Note the outputs for each environment — `resource_group_name`, `storage_account_name`,
-`frontend_vmss_name`, `backend_vmss_name`, `frontend_url`. Instances will boot with a "waiting for
-first release" page since no artifact has been published yet.
+`frontend_vmss_name`, `backend_vmss_name`, `frontend_release_container`,
+`backend_release_container`, `frontend_url`. Instances will boot with a "waiting for first
+release" page since no artifact has been published yet.
 
-This first apply has to be run locally like this, per environment, since it's what creates the
-resource group the Azure DevOps service connection (next step) gets scoped to — the infra
-pipeline set up in step 8 takes over for *ongoing* changes after that, it can't bootstrap from
-nothing unless you instead scope the service connection at the subscription level.
+Since the resource group and storage account already exist, there's no bootstrap ordering problem
+here — the Azure DevOps service connection (next step) can be scoped to `Training-Batch-6.23`
+before or after this first apply, and the infra pipeline (step 8) is equally capable of running
+this first apply itself instead of doing it locally.
 
-### 4. Azure DevOps service connections
+### 4. Azure DevOps service connection
 
 In the Azure DevOps project: **Project Settings > Service connections > New > Azure Resource
-Manager**, one scoped to the staging resource group and one scoped to the production resource
-group (keeping them separate means a staging deploy can't accidentally touch production). This
-step is manual — Terraform's `azurerm` provider can't create Azure DevOps service connections.
+Manager**, named exactly `AzureTraining`, pointed at subscription **AzureTraining**
+(`606e824b-aaf7-4b4e-9057-b459f6a4436d`), scoped down to the `Training-Batch-6.23` resource group.
+This step stays manual — creating trust/credential objects like a service connection is
+deliberately left out of Terraform here, unlike the variable groups and secret in the next step.
+One connection is enough for both environments, since staging and production already share this
+resource group — there's no RG-level isolation to preserve by creating two.
 
-### 5. Azure DevOps variable groups
+You'll need this connection's underlying service principal's Entra ID **object ID** for step 5 —
+find it via **Manage Service Principal** on the connection's detail page (opens the Entra portal
+to its App ID), then:
 
-**Pipelines > Library > + Variable group**, create two groups named exactly `todoapp-staging` and
-`todoapp-production`. Both pipelines (frontend and backend release) load whichever group matches
-the stage they're running, so each group needs all four keys even though a given pipeline only
-uses the `frontendVmssName` or `backendVmssName` it needs:
+```bash
+az ad sp show --id <appId> --query id -o tsv
+```
 
-| Variable | Value |
-| --- | --- |
-| `azureServiceConnection` | that environment's service connection from step 4 |
-| `resourceGroupName` | that environment's `terraform output resource_group_name` |
-| `storageAccountName` | that environment's `terraform output storage_account_name` |
-| `frontendVmssName` | that environment's `terraform output frontend_vmss_name` |
-| `backendVmssName` | that environment's `terraform output backend_vmss_name` |
+### 5. Library variable groups and secrets (Terraform-managed)
 
-Also grant each service connection's identity **Storage Blob Data Contributor** on its
-environment's storage account (so the pipeline can upload releases) — Terraform doesn't know the
-service connection's identity, so this role assignment is also manual (`az role assignment
-create`).
+Everything under **Pipelines > Library** — the `todoapp-staging` / `todoapp-production` variable
+groups, a new Key Vault, the `azureServiceConnection` secret in it, and the Key Vault-linked
+`todoapp-azure-connection` group exposing that secret — is created by a third Terraform stack,
+[infra/terraform-devops/](infra/terraform-devops/), rather than by hand. It reads its values out
+of the staging and production app infra's remote state, so **both environments from step 3 must
+already be applied** before this stack can be.
+
+```bash
+cd infra/terraform-devops
+cp terraform.tfvars.example terraform.tfvars   # already has azdo_project_name = "training-proj" -
+                                                # fill in key_vault_name (must be globally unique)
+                                                # and azure_training_sp_object_id (from step 4)
+cp backend.hcl.example backend.hcl             # already points at Training-Batch-6.23 / olalekog
+
+export AZDO_ORG_SERVICE_URL="https://dev.azure.com/324DSTraining"
+export AZDO_PERSONAL_ACCESS_TOKEN="<PAT with Variable Groups read/create/manage scope>"
+
+terraform init -backend-config=backend.hcl
+terraform plan -out=tfplan
+terraform apply tfplan
+```
+
+What this creates, all named to match what the pipelines already expect (see
+[pipelines/frontend-release.yml](pipelines/frontend-release.yml)'s header for the full list each
+group needs):
+
+- `todoapp-staging` / `todoapp-production` — plain variable groups holding
+  `resourceGroupName`, `storageAccountName`, `frontendVmssName`, `backendVmssName`,
+  `frontendReleaseContainer`, `backendReleaseContainer`, pulled straight from
+  `terraform output` in each environment's app infra state.
+- A new Key Vault (`key_vault_name`, RBAC-authorized, in `Training-Batch-6.23` by default)
+  holding two secrets: `azureServiceConnection` (value `AzureTraining`) and
+  `azureTrainingSpObjectId` (value `azure_training_sp_object_id` from your tfvars — persisted
+  here so nothing downstream has to re-discover that GUID by hand) — plus a **Key Vault Secrets
+  User** role assignment so Azure DevOps can actually read them. Since the vault uses RBAC
+  authorization, the identity running `terraform apply` also needs a **Key Vault Secrets
+  Officer** grant on it to write those secrets in the same apply — the stack creates that
+  role assignment itself and pauses 30s for it to propagate before writing them, so this
+  should just work, but if the very first apply 403s on a secret, it's this propagation delay
+  and a second `terraform apply` will succeed. Note `azure_training_sp_object_id` itself can't
+  come *from* this vault — it's what grants access to the vault in the first place, so it has to
+  stay a plain Terraform input.
+- `todoapp-azure-connection` — the Key Vault-linked variable group exposing both secrets as
+  Library variables (`azureServiceConnection`, `azureTrainingSpObjectId`). Shared by both
+  environments since neither value differs between them.
+- **Storage Blob Data Contributor** on the `AzureTraining` connection's identity, scoped to each
+  environment's two release containers specifically — not the whole shared account, since it
+  likely holds other people's training data too.
+
+Note the self-reference: the `AzureTraining` connection both authorizes the Key Vault link *and*
+is the value the resulting variable resolves to. Those are two independent uses of it (one is
+"can Azure DevOps read this vault," the other is "which subscription should `az`/`terraform`
+commands run against"), so there's no actual circularity — just re-use of the same connection.
+
+The PAT and org URL only need to be exported in your shell for this one apply — nothing in this
+repo stores them.
 
 ### 6. Azure DevOps environments and approval gate
 
@@ -176,11 +252,12 @@ Push to `main`:
 
 - Changes under `frontend/` trigger `todoapp-frontend-build`: `npm run build` → zip → publish
   pipeline artifact. Its completion triggers `todoapp-frontend-release`, which deploys to
-  **staging** (upload to that environment's `frontend-releases/latest.zip` → `az vmss run-command
-  invoke` re-runs `/opt/deploy/deploy-frontend.sh` on every running staging instance), then — after
-  the approval check clears — repeats the same steps against **production**.
+  **staging** (upload to that environment's `frontend-releases-staging/latest.zip` →
+  `az vmss run-command invoke` re-runs `/opt/deploy/deploy-frontend.sh` on every running staging
+  instance), then — after the approval check clears — repeats the same steps against
+  **production** (`frontend-releases-production/latest.zip`).
 - Changes under `backend/` trigger `todoapp-backend-build` → `todoapp-backend-release` the same
-  way, with `backend-releases/latest.zip` and `deploy-backend.sh`.
+  way, with `backend-releases-staging` / `backend-releases-production` and `deploy-backend.sh`.
 - Changes under `infra/terraform/` trigger `todoapp-infra-deploy`: plan and auto-apply against
   **staging**, then plan against **production** and wait for approval before applying. Every
   apply uses the exact plan file its own plan stage produced — nothing gets re-planned right
@@ -204,4 +281,20 @@ instance's first boot — no pipeline run needed.
   variables/custom_data, and/or shorten that pipeline's artifact retention.
 - **No SSH/Bastion.** Instance access for debugging is via `az vmss run-command invoke`. Add
   Azure Bastion if interactive shell access is needed.
-- **Single region, LRS storage.** No geo-redundancy or multi-region failover.
+- **Single region, LRS storage.** No geo-redundancy or multi-region failover. Region is whatever
+  `Training-Batch-6.23` is deployed in — not independently configurable, since resources now
+  inherit the existing resource group's location instead of a `location` variable.
+- **Shared resource group, storage account, and VNet.** Staging and production — and possibly
+  other people's training exercises — live in the same `Training-Batch-6.23` RG, `olalekog`
+  account, and `VM-VNET`. Role assignments for both the VMSS managed identities and the pipeline
+  service connection are scoped down to each environment's specific release container, not the
+  whole account, but that only protects blob data — NSGs and everything else Terraform creates
+  still share the RG's blast radius with whatever else is in it (e.g. a broad `az role assignment`
+  or resource deletion by someone else in the RG isn't isolated from this app). Not something to
+  fix in Terraform; just a real constraint of building on shared training infrastructure instead
+  of dedicated resource groups/VNets per environment.
+- **No network-level isolation from other things in VM-VNET.** Subnets are per-environment and
+  NSG'd, but since it's a shared VNet rather than a dedicated one, anything else already deployed
+  there (or added later by someone else) is in the same routing domain unless VM-VNET has its own
+  additional segmentation. The NSGs here only control what reaches *this app's* subnets, not what
+  those subnets could reach elsewhere in VM-VNET.

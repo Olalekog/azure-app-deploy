@@ -8,39 +8,34 @@ locals {
   name_prefix = "${var.project}-${var.environment}"
 }
 
-resource "azurerm_resource_group" "main" {
-  name     = "rg-${local.name_prefix}"
-  location = var.location
-  tags     = var.tags
+data "azurerm_resource_group" "main" {
+  name = var.existing_resource_group_name
 }
 
-resource "azurerm_virtual_network" "main" {
-  name                = "vnet-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  address_space       = var.vnet_address_space
-  tags                = var.tags
+data "azurerm_virtual_network" "main" {
+  name                = var.existing_vnet_name
+  resource_group_name = coalesce(var.existing_vnet_resource_group_name, data.azurerm_resource_group.main.name)
 }
 
 resource "azurerm_subnet" "frontend" {
-  name                 = "snet-frontend"
-  resource_group_name  = azurerm_resource_group.main.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  name                 = "snet-frontend-${local.name_prefix}"
+  resource_group_name  = data.azurerm_virtual_network.main.resource_group_name
+  virtual_network_name = data.azurerm_virtual_network.main.name
   address_prefixes     = var.frontend_subnet_prefix
 }
 
 resource "azurerm_subnet" "backend" {
-  name                 = "snet-backend"
-  resource_group_name  = azurerm_resource_group.main.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  name                 = "snet-backend-${local.name_prefix}"
+  resource_group_name  = data.azurerm_virtual_network.main.resource_group_name
+  virtual_network_name = data.azurerm_virtual_network.main.name
   address_prefixes     = var.backend_subnet_prefix
 }
 
 # --- Frontend NSG: only 80 from the Internet, plus the ports Azure needs for LB health probes ---
 resource "azurerm_network_security_group" "frontend" {
   name                = "nsg-frontend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   tags                = var.tags
 
   security_rule {
@@ -71,8 +66,8 @@ resource "azurerm_network_security_group" "frontend" {
 # --- Backend NSG: only 8000 from the frontend subnet, no direct Internet exposure ---
 resource "azurerm_network_security_group" "backend" {
   name                = "nsg-backend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   tags                = var.tags
 
   security_rule {

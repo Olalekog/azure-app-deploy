@@ -1,5 +1,5 @@
 output "resource_group_name" {
-  value = azurerm_resource_group.main.name
+  value = data.azurerm_resource_group.main.name
 }
 
 output "frontend_url" {
@@ -17,7 +17,7 @@ output "backend_internal_lb_ip" {
 }
 
 output "storage_account_name" {
-  value = azurerm_storage_account.main.name
+  value = data.azurerm_storage_account.main.name
 }
 
 output "frontend_release_container" {

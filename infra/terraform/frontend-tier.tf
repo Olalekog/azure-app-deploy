@@ -1,7 +1,7 @@
 resource "azurerm_public_ip" "frontend" {
   name                = "pip-frontend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   allocation_method   = "Static"
   sku                 = "Standard"
   domain_name_label   = "${local.name_prefix}-${random_string.suffix.result}"
@@ -10,8 +10,8 @@ resource "azurerm_public_ip" "frontend" {
 
 resource "azurerm_lb" "frontend" {
   name                = "lb-frontend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   sku                 = "Standard"
   tags                = var.tags
 
@@ -49,21 +49,22 @@ resource "azurerm_lb_rule" "frontend_http" {
 
 resource "azurerm_user_assigned_identity" "frontend" {
   name                = "id-frontend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   tags                = var.tags
 }
 
 resource "azurerm_role_assignment" "frontend_blob_read" {
-  scope                = azurerm_storage_account.main.id
+  # Scoped to just this environment's release container, not the whole (shared) storage account.
+  scope                = "${data.azurerm_storage_account.main.id}/blobServices/default/containers/${azurerm_storage_container.frontend_releases.name}"
   role_definition_name = "Storage Blob Data Reader"
   principal_id         = azurerm_user_assigned_identity.frontend.principal_id
 }
 
 resource "azurerm_linux_virtual_machine_scale_set" "frontend" {
   name                = "vmss-frontend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   sku                 = var.frontend_vm_size
   instances           = var.frontend_instance_count
   admin_username      = var.admin_username
@@ -105,8 +106,9 @@ resource "azurerm_linux_virtual_machine_scale_set" "frontend" {
   }
 
   custom_data = base64encode(templatefile("${path.module}/scripts/frontend-cloud-init.yaml.tpl", {
-    storage_account_name = azurerm_storage_account.main.name
-    backend_lb_ip        = var.backend_lb_private_ip
+    storage_account_name   = data.azurerm_storage_account.main.name
+    release_container_name = azurerm_storage_container.frontend_releases.name
+    backend_lb_ip          = var.backend_lb_private_ip
   }))
 
   depends_on = [azurerm_role_assignment.frontend_blob_read]
@@ -114,8 +116,8 @@ resource "azurerm_linux_virtual_machine_scale_set" "frontend" {
 
 resource "azurerm_monitor_autoscale_setting" "frontend" {
   name                = "autoscale-frontend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   target_resource_id  = azurerm_linux_virtual_machine_scale_set.frontend.id
   tags                = var.tags
 

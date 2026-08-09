@@ -1,7 +1,7 @@
 resource "azurerm_lb" "backend" {
   name                = "lb-backend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   sku                 = "Standard"
   tags                = var.tags
 
@@ -41,21 +41,22 @@ resource "azurerm_lb_rule" "backend_api" {
 
 resource "azurerm_user_assigned_identity" "backend" {
   name                = "id-backend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   tags                = var.tags
 }
 
 resource "azurerm_role_assignment" "backend_blob_read" {
-  scope                = azurerm_storage_account.main.id
+  # Scoped to just this environment's release container, not the whole (shared) storage account.
+  scope                = "${data.azurerm_storage_account.main.id}/blobServices/default/containers/${azurerm_storage_container.backend_releases.name}"
   role_definition_name = "Storage Blob Data Reader"
   principal_id         = azurerm_user_assigned_identity.backend.principal_id
 }
 
 resource "azurerm_linux_virtual_machine_scale_set" "backend" {
   name                = "vmss-backend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   sku                 = var.backend_vm_size
   instances           = var.backend_instance_count
   admin_username      = var.admin_username
@@ -97,10 +98,11 @@ resource "azurerm_linux_virtual_machine_scale_set" "backend" {
   }
 
   custom_data = base64encode(templatefile("${path.module}/scripts/backend-cloud-init.yaml.tpl", {
-    storage_account_name = azurerm_storage_account.main.name
-    storage_account_key  = azurerm_storage_account.main.primary_access_key
-    file_share_name      = azurerm_storage_share.tododata.name
-    allowed_origins      = "http://${azurerm_public_ip.frontend.fqdn}"
+    storage_account_name   = data.azurerm_storage_account.main.name
+    storage_account_key    = data.azurerm_storage_account.main.primary_access_key
+    release_container_name = azurerm_storage_container.backend_releases.name
+    file_share_name        = azurerm_storage_share.tododata.name
+    allowed_origins        = "http://${azurerm_public_ip.frontend.fqdn}"
   }))
 
   depends_on = [azurerm_role_assignment.backend_blob_read]
@@ -108,8 +110,8 @@ resource "azurerm_linux_virtual_machine_scale_set" "backend" {
 
 resource "azurerm_monitor_autoscale_setting" "backend" {
   name                = "autoscale-backend-${local.name_prefix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
   target_resource_id  = azurerm_linux_virtual_machine_scale_set.backend.id
   tags                = var.tags
 

@@ -42,7 +42,7 @@ write_files:
       trap 'rm -rf "$TMP"' EXIT
 
       azcopy login --identity >/tmp/azcopy-login.log 2>&1
-      azcopy copy "https://${storage_account_name}.blob.core.windows.net/frontend-releases/latest.zip" "$TMP/latest.zip" --output-type text
+      azcopy copy "https://${storage_account_name}.blob.core.windows.net/${release_container_name}/latest.zip" "$TMP/latest.zip" --output-type text
       unzip -o "$TMP/latest.zip" -d "$DEST"
       systemctl reload nginx
       echo "$(date -u +%FT%TZ) deployed frontend" >> /var/log/todoapp-deploy.log

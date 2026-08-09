@@ -1,9 +1,13 @@
 # Copy to backend.hcl (gitignored) and fill in, then:
 #   terraform init -backend-config=backend.hcl -reconfigure
-# Use a distinct `key` per environment so staging and production keep separate state files
-# in the same (or different) state storage account.
+# Reuses the same pre-existing storage account as the app's own data/release storage (see
+# terraform.tfvars.staging.example) since this is a training subscription with only one
+# account available - state just lives in its own "tfstate" container within it. Create that
+# container once (lower-privilege than creating a new storage account):
+#   az storage container create -n tfstate --account-name olalekog
+# `key` differs per environment so staging and production keep separate state files.
 
-resource_group_name  = "rg-tfstate"
-storage_account_name = "sttodotfstate<unique>"
+resource_group_name  = "Training-Batch-6.23"
+storage_account_name = "olalekog"
 container_name       = "tfstate"
 key                  = "todoapp-staging.tfstate"

@@ -14,14 +14,20 @@
 # completes (via the pipeline resource below).
 #
 # Requires two Azure DevOps variable groups (Pipelines > Library), one per environment, each with:
-#   azureServiceConnection - ARM service connection with Contributor on that environment's
-#                             resource group, and Storage Blob Data Contributor on its storage account
-#   resourceGroupName      - that environment's `terraform output resource_group_name`
-#   storageAccountName     - that environment's `terraform output storage_account_name`
-#   backendVmssName        - that environment's `terraform output backend_vmss_name`
+#   resourceGroupName       - that environment's `terraform output resource_group_name`
+#   storageAccountName      - that environment's `terraform output storage_account_name`
+#     (staging and production may share the same storage account - see
+#     backendReleaseContainer below for how they stay separated within it)
+#   backendVmssName         - that environment's `terraform output backend_vmss_name`
+#   backendReleaseContainer - that environment's `terraform output backend_release_container`
 #
 #   todoapp-staging     -> staging environment's values
 #   todoapp-production  -> production environment's values
+#
+# Plus one shared, Key Vault-linked variable group "todoapp-azure-connection" providing
+# azureServiceConnection - the name of the ARM service connection ("AzureTraining", scoped to
+# subscription AzureTraining / 606e824b-aaf7-4b4e-9057-b459f6a4436d, resource group
+# Training-Batch-6.23) - see DEPLOY.md for how that group is wired to Key Vault.
 #
 # Also requires two Azure DevOps Environments (Pipelines > Environments) named
 # "todoapp-staging" and "todoapp-production" - the deployment jobs below target them by name.
@@ -46,6 +52,7 @@ stages:
         environment: todoapp-staging
         variables:
           - group: todoapp-staging
+          - group: todoapp-azure-connection
         strategy:
           runOnce:
             deploy:
@@ -74,6 +81,7 @@ stages:
         environment: todoapp-production
         variables:
           - group: todoapp-production
+          - group: todoapp-azure-connection
         strategy:
           runOnce:
             deploy:

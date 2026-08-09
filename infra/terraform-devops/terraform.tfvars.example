@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+# Also export before running terraform (never put these in a file):
+#   export AZDO_ORG_SERVICE_URL="https://dev.azure.com/324DSTraining"
+#   export AZDO_PERSONAL_ACCESS_TOKEN="<PAT with Variable Groups (read, create, & manage) scope>"
+
+azdo_project_name = "training-proj"
+
+# New Key Vault this stack will create - must be globally unique, 3-24 alphanumeric/hyphen chars.
+key_vault_name = "<key-vault-name>"
+
+# Entra ID object ID of the AzureTraining service connection's service principal - find via:
+#   az ad sp show --id <appId> --query id -o tsv
+# (appId is on the service connection's "Manage Service Principal" link in Azure DevOps)
+azure_training_sp_object_id = "<object-id>"

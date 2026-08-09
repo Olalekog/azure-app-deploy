@@ -1,6 +1,10 @@
-# CI: packages the FastAPI app and publishes it as a pipeline artifact.
-# Create this as an Azure DevOps pipeline named "todoapp-backend-build" -
+# CI: installs the FastAPI app's dependencies, runs its pytest suite, and publishes a
+# release-ready artifact. Create this as an Azure DevOps pipeline named "todoapp-backend-build" -
 # backend-release.yml references it by that exact name.
+#
+# Build and Test run in parallel (dependsOn: [] on Test) since neither needs the other's output -
+# both just need the checked-out source plus their own dependency install. PublishArtifact waits
+# for both, so a broken import or a failing test blocks the artifact from ever being published.
 
 trigger:
   branches:
@@ -10,27 +14,61 @@ trigger:
     include:
       - backend
 
-pool:
-  vmImage: ubuntu-latest
+stages:
+  - stage: Build
+    displayName: 'Build'
+    jobs:
+      - job: Build
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
 
-steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.11'
+          - script: |
+              set -euo pipefail
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              python -c "import app.main"
+            workingDirectory: backend
+            displayName: 'Install dependencies and sanity-import'
 
-  - script: |
-      set -euo pipefail
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-      python -m compileall app
-    workingDirectory: backend
-    displayName: 'Install deps and sanity-compile'
+  - stage: Test
+    displayName: 'Test'
+    dependsOn: []
+    jobs:
+      - job: Test
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
 
-  - script: |
-      set -euo pipefail
-      cd backend
-      zip -r "$(Build.ArtifactStagingDirectory)/latest.zip" app requirements.txt
-    displayName: 'Zip app + requirements.txt'
+          - script: |
+              set -euo pipefail
+              python -m pip install --upgrade pip
+              pip install -r requirements-dev.txt
+              pytest
+            workingDirectory: backend
+            displayName: 'Install dependencies and run pytest'
 
-  - publish: '$(Build.ArtifactStagingDirectory)/latest.zip'
-    artifact: backend-release
+  - stage: PublishArtifact
+    displayName: 'Publish artifact'
+    dependsOn:
+      - Build
+      - Test
+    jobs:
+      - job: Publish
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - script: |
+              set -euo pipefail
+              cd backend
+              zip -r "$(Build.ArtifactStagingDirectory)/latest.zip" app requirements.txt
+            displayName: 'Zip app + requirements.txt'
+
+          - publish: '$(Build.ArtifactStagingDirectory)/latest.zip'
+            artifact: backend-release

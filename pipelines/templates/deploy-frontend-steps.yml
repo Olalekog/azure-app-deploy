@@ -1,7 +1,9 @@
 # Shared deploy steps for the frontend: upload the artifact already downloaded by the calling
 # deployment job, then redeploy it onto every running instance of the target environment's VMSS.
-# Expects $(azureServiceConnection), $(storageAccountName), $(resourceGroupName) and
-# $(frontendVmssName) from whichever variable group the calling stage loaded.
+# Expects $(azureServiceConnection), $(storageAccountName), $(resourceGroupName),
+# $(frontendVmssName) and $(frontendReleaseContainer) from whichever variable group the calling
+# stage loaded - the container name is environment-specific since staging and production share
+# one storage account (see terraform output frontend_release_container).
 
 steps:
   - task: AzureCLI@2
@@ -15,7 +17,7 @@ steps:
         az storage blob upload \
           --account-name "$(storageAccountName)" \
           --auth-mode login \
-          --container-name frontend-releases \
+          --container-name "$(frontendReleaseContainer)" \
           --name latest.zip \
           --file "$(Pipeline.Workspace)/frontendBuild/frontend-release/latest.zip" \
           --overwrite

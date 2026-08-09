@@ -34,5 +34,6 @@ Terraform provisions two VM Scale Sets (frontend/backend) behind Standard Load B
 an Azure Files share as the shared JSON data tier. Azure DevOps Pipelines build and release each
 tier independently. See [DEPLOY.md](DEPLOY.md) for the full architecture and setup steps.
 
-- Infrastructure — [infra/terraform/](infra/terraform/)
+- App infrastructure — [infra/terraform/](infra/terraform/)
+- Azure DevOps library variables/secrets — [infra/terraform-devops/](infra/terraform-devops/)
 - Pipelines — [pipelines/](pipelines/)

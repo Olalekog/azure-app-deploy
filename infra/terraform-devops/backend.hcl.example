@@ -1,0 +1,8 @@
+# Copy to backend.hcl (gitignored) and fill in, then:
+#   terraform init -backend-config=backend.hcl
+# Separate state key from the app infra stacks, same shared storage account/container.
+
+resource_group_name  = "Training-Batch-6.23"
+storage_account_name = "olalekog"
+container_name       = "tfstate"
+key                  = "todoapp-devops.tfstate"
