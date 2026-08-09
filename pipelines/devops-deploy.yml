@@ -1,0 +1,157 @@
+# CI/CD for infra/terraform-devops - the stack that creates the Azure DevOps Library variable
+# groups, the Key Vault, and its secrets that every other pipeline in this repo depends on.
+#
+# Unlike infra-deploy.yml, there's no staging/production split here - this one stack manages
+# Library config for both environments in a single apply. And unlike infra-deploy.yml's tfvars
+# (which come from Library variable groups populated by a *different*, already-existing stack's
+# outputs), this stack's own tfvars can't come from Library variables without being circular -
+# it's what creates those variables in the first place. So they come from a Secure File instead,
+# mirroring the local terraform.tfvars workflow exactly.
+#
+# Create this as an Azure DevOps pipeline named e.g. "todoapp-devops-deploy".
+#
+# Requires:
+#   - A Secure File (Pipelines > Library > Secure files) named "todoapp-devops.tfvars",
+#     containing a filled-in copy of infra/terraform-devops/terraform.tfvars.example.
+#   - The shared "todoapp-azure-connection" Key Vault-linked variable group (for
+#     azureServiceConnection - see frontend-release.yml's header), used for the azurerm-provider
+#     resources here (Key Vault, role assignments).
+#   - The project's Build Service identity granted "Administrator" on Library security
+#     (Project Settings > Pipelines > Library > Security) - the Apply stage authenticates the
+#     azuredevops provider with $(System.AccessToken) instead of a stored PAT, and that identity
+#     needs permission to create/update variable groups for it to actually work.
+#   - An Azure DevOps Environment "todoapp-devops" for the approval gate below - like
+#     infra-deploy.yml's production stage, applying here is gated since it touches RBAC/secrets,
+#     not just app infra.
+#
+# Bootstrap note: the very first apply of this stack still has to run locally - there's no
+# "todoapp-azure-connection" group to authenticate with, and nobody's granted the Build Service
+# Library permissions or uploaded the Secure File yet without a human doing it once. This
+# pipeline is for *ongoing* changes after that.
+
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - infra/terraform-devops/*
+
+variables:
+  terraformVersion: '1.10.4'
+
+stages:
+- stage: Plan
+  displayName: 'Plan'
+  jobs:
+  - job: Plan
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+    - group: todoapp-azure-connection
+    steps:
+    - task: DownloadSecureFile@1
+      name: tfvarsFile
+      displayName: 'Download terraform.tfvars'
+      inputs:
+        secureFile: todoapp-devops.tfvars
+
+    - script: |
+        set -euo pipefail
+        curl -fsSL "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" -o /tmp/terraform.zip
+        sudo unzip -o /tmp/terraform.zip -d /usr/local/bin
+        terraform -version
+      displayName: 'Install Terraform'
+
+    - script: |
+        set -euo pipefail
+        cp "$(tfvarsFile.secureFilePath)" infra/terraform-devops/terraform.tfvars
+        cat > infra/terraform-devops/backend.hcl <<EOF
+        resource_group_name  = "Training-Batch-6.23"
+        storage_account_name = "olalekog"
+        container_name       = "tfstate"
+        key                   = "todoapp-devops.tfstate"
+        EOF
+      displayName: 'Stage tfvars and generate backend config'
+
+    - task: AzureCLI@2
+      displayName: 'terraform init && terraform plan'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        workingDirectory: infra/terraform-devops
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          terraform init -backend-config=backend.hcl -reconfigure -input=false
+          terraform plan -input=false -out=tfplan
+      env:
+        AZDO_ORG_SERVICE_URL: $(azdoOrgServiceUrl)
+        AZDO_PERSONAL_ACCESS_TOKEN: $(System.AccessToken)
+
+    - publish: infra/terraform-devops/tfplan
+      artifact: devops-tfplan
+      displayName: 'Publish plan file'
+
+- stage: Apply
+  displayName: 'Apply'
+  dependsOn: Plan
+  jobs:
+  - job: WaitForApproval
+    displayName: 'Manual approval to apply'
+    pool: server
+    timeoutInMinutes: 1440
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+      inputs:
+        instructions: 'Review the Plan stage logs, then approve to apply changes to Azure DevOps Library variable groups, the Key Vault, and related role assignments.'
+
+  - deployment: Apply
+    displayName: 'Apply'
+    dependsOn: WaitForApproval
+    environment: todoapp-devops
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+    - group: todoapp-azure-connection
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: devops-tfplan
+            displayName: 'Download plan file'
+
+          - script: |
+              set -euo pipefail
+              curl -fsSL "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" -o /tmp/terraform.zip
+              sudo unzip -o /tmp/terraform.zip -d /usr/local/bin
+              terraform -version
+            displayName: 'Install Terraform'
+
+          - script: |
+              set -euo pipefail
+              cat > infra/terraform-devops/backend.hcl <<EOF
+              resource_group_name  = "Training-Batch-6.23"
+              storage_account_name = "olalekog"
+              container_name       = "tfstate"
+              key                   = "todoapp-devops.tfstate"
+              EOF
+              cp "$(Pipeline.Workspace)/devops-tfplan/tfplan" infra/terraform-devops/tfplan
+            displayName: 'Generate backend config and stage plan file'
+
+          - task: AzureCLI@2
+            displayName: 'terraform init && terraform apply'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: bash
+              workingDirectory: infra/terraform-devops
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                terraform init -backend-config=backend.hcl -reconfigure -input=false
+                terraform apply -input=false tfplan
+            env:
+              AZDO_ORG_SERVICE_URL: $(azdoOrgServiceUrl)
+              AZDO_PERSONAL_ACCESS_TOKEN: $(System.AccessToken)

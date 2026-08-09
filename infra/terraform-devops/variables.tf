@@ -15,6 +15,12 @@ variable "azdo_project_name" {
   type        = string
 }
 
+variable "azdo_org_service_url" {
+  description = "Azure DevOps organization URL, published as a Library variable (azdoOrgServiceUrl, via todoapp-azure-connection) so pipelines don't need to hardcode it."
+  type        = string
+  default     = "https://dev.azure.com/324DSTraining"
+}
+
 variable "azure_training_service_connection_name" {
   description = "Name of the existing ARM service connection (created manually - see DEPLOY.md step 4)."
   type        = string
@@ -43,4 +49,42 @@ variable "tags" {
   default = {
     project = "todoapp"
   }
+}
+
+# Published into todoapp-staging-tfvars / todoapp-production-tfvars (tfvars_groups.tf) so
+# infra-deploy.yml can reconstruct infra/terraform/terraform.tfvars without Secure Files. These
+# are *inputs* to the app infra (needed to create it), unlike todoapp-staging/todoapp-production
+# (variable_groups.tf) which hold that infra's *outputs* - keeping them in separate groups avoids
+# a circular dependency, since the output-holding groups can't be populated until the infra
+# already exists, but these input values are needed before it does.
+variable "staging_tfvars" {
+  description = "Mirrors terraform.tfvars.staging.example - see infra/terraform/variables.tf for field meanings."
+  type = object({
+    existing_vnet_name      = string
+    frontend_subnet_prefix  = string
+    backend_subnet_prefix   = string
+    backend_lb_private_ip   = string
+    admin_username          = string
+    admin_ssh_public_key    = string
+    frontend_instance_count = number
+    frontend_instance_max   = number
+    backend_instance_count  = number
+    backend_instance_max    = number
+  })
+}
+
+variable "production_tfvars" {
+  description = "Mirrors terraform.tfvars.production.example - see infra/terraform/variables.tf for field meanings."
+  type = object({
+    existing_vnet_name      = string
+    frontend_subnet_prefix  = string
+    backend_subnet_prefix   = string
+    backend_lb_private_ip   = string
+    admin_username          = string
+    admin_ssh_public_key    = string
+    frontend_instance_count = number
+    frontend_instance_max   = number
+    backend_instance_count  = number
+    backend_instance_max    = number
+  })
 }

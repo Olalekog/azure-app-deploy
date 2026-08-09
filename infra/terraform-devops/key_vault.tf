@@ -52,6 +52,14 @@ resource "azurerm_key_vault_secret" "azure_training_sp_object_id" {
   depends_on = [time_sleep.wait_for_kv_rbac]
 }
 
+resource "azurerm_key_vault_secret" "azdo_org_service_url" {
+  name         = "azdoOrgServiceUrl"
+  value        = var.azdo_org_service_url
+  key_vault_id = azurerm_key_vault.this.id
+
+  depends_on = [time_sleep.wait_for_kv_rbac]
+}
+
 # Lets Azure DevOps' variable-group Key Vault link actually read the secrets above.
 resource "azurerm_role_assignment" "azure_training_kv_secrets_user" {
   scope                = azurerm_key_vault.this.id
@@ -83,9 +91,14 @@ resource "azuredevops_variable_group" "azure_connection" {
     name = "azureTrainingSpObjectId"
   }
 
+  variable {
+    name = "azdoOrgServiceUrl"
+  }
+
   depends_on = [
     azurerm_key_vault_secret.azure_service_connection,
     azurerm_key_vault_secret.azure_training_sp_object_id,
+    azurerm_key_vault_secret.azdo_org_service_url,
     azurerm_role_assignment.azure_training_kv_secrets_user,
   ]
 }

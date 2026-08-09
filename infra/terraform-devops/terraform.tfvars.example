@@ -12,3 +12,33 @@ key_vault_name = "<key-vault-name>"
 #   az ad sp show --id <appId> --query id -o tsv
 # (appId is on the service connection's "Manage Service Principal" link in Azure DevOps)
 azure_training_sp_object_id = "<object-id>"
+
+# Published to todoapp-staging-tfvars / todoapp-production-tfvars so infra-deploy.yml can
+# reconstruct infra/terraform/terraform.tfvars - keep these in sync with
+# infra/terraform/terraform.tfvars.staging.example / .production.example by hand, there's no
+# automatic link between the two stacks for these values.
+staging_tfvars = {
+  existing_vnet_name      = "VM-VNET"
+  frontend_subnet_prefix  = "10.0.1.0/24"
+  backend_subnet_prefix   = "10.0.2.0/24"
+  backend_lb_private_ip   = "10.0.2.4"
+  admin_username          = "azureuser"
+  admin_ssh_public_key    = "ssh-ed25519 AAAA... your-public-key"
+  frontend_instance_count = 1
+  frontend_instance_max   = 2
+  backend_instance_count  = 1
+  backend_instance_max    = 2
+}
+
+production_tfvars = {
+  existing_vnet_name      = "VM-VNET"
+  frontend_subnet_prefix  = "10.0.3.0/24"
+  backend_subnet_prefix   = "10.0.4.0/24"
+  backend_lb_private_ip   = "10.0.4.4"
+  admin_username          = "azureuser"
+  admin_ssh_public_key    = "ssh-ed25519 AAAA... your-public-key"
+  frontend_instance_count = 2
+  frontend_instance_max   = 6
+  backend_instance_count  = 2
+  backend_instance_max    = 6
+}

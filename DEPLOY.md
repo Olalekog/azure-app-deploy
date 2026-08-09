@@ -139,18 +139,23 @@ az ad sp show --id <appId> --query id -o tsv
 
 ### 5. Library variable groups and secrets (Terraform-managed)
 
-Everything under **Pipelines > Library** — the `todoapp-staging` / `todoapp-production` variable
-groups, a new Key Vault, the `azureServiceConnection` secret in it, and the Key Vault-linked
-`todoapp-azure-connection` group exposing that secret — is created by a third Terraform stack,
-[infra/terraform-devops/](infra/terraform-devops/), rather than by hand. It reads its values out
-of the staging and production app infra's remote state, so **both environments from step 3 must
-already be applied** before this stack can be.
+Everything under **Pipelines > Library** — all four variable groups and the Key Vault secrets
+backing one of them — is created by a third Terraform stack,
+[infra/terraform-devops/](infra/terraform-devops/), rather than by hand or via Secure File
+uploads. Two of the four groups read their values out of the staging and production app infra's
+remote state, so **both environments from step 3 must already be applied** before this stack can
+be.
 
 ```bash
 cd infra/terraform-devops
-cp terraform.tfvars.example terraform.tfvars   # already has azdo_project_name = "training-proj" -
-                                                # fill in key_vault_name (must be globally unique)
-                                                # and azure_training_sp_object_id (from step 4)
+cp terraform.tfvars.example terraform.tfvars   # already has azdo_project_name = "training-proj"
+                                                # and staging_tfvars/production_tfvars matching
+                                                # infra/terraform's tfvars - fill in
+                                                # key_vault_name (must be globally unique) and
+                                                # azure_training_sp_object_id (from step 4), and
+                                                # keep staging_tfvars/production_tfvars in sync
+                                                # with infra/terraform/terraform.tfvars.*.example
+                                                # by hand if either ever changes
 cp backend.hcl.example backend.hcl             # already points at Training-Batch-6.23 / olalekog
 
 export AZDO_ORG_SERVICE_URL="https://dev.azure.com/324DSTraining"
@@ -162,13 +167,21 @@ terraform apply tfplan
 ```
 
 What this creates, all named to match what the pipelines already expect (see
-[pipelines/frontend-release.yml](pipelines/frontend-release.yml)'s header for the full list each
-group needs):
+[pipelines/frontend-release.yml](pipelines/frontend-release.yml)'s and
+[pipelines/infra-deploy.yml](pipelines/infra-deploy.yml)'s headers for the full list each group
+needs):
 
-- `todoapp-staging` / `todoapp-production` — plain variable groups holding
+- `todoapp-staging` / `todoapp-production` — hold that environment's app infra **outputs**:
   `resourceGroupName`, `storageAccountName`, `frontendVmssName`, `backendVmssName`,
-  `frontendReleaseContainer`, `backendReleaseContainer`, pulled straight from
-  `terraform output` in each environment's app infra state.
+  `frontendReleaseContainer`, `backendReleaseContainer`, pulled straight from `terraform output`.
+  Used by the app release pipelines to know where to deploy.
+- `todoapp-staging-tfvars` / `todoapp-production-tfvars` — hold the **inputs** `infra-deploy.yml`
+  needs to reconstruct `infra/terraform/terraform.tfvars` and `backend.hcl` at runtime:
+  `existingVnetName`, `frontendSubnetPrefix`, `backendSubnetPrefix`, `backendLbPrivateIp`,
+  `adminUsername`, `adminSshPublicKey`, and the four instance count/max values. Kept separate
+  from the two groups above on purpose — those can't be populated until the app infra already
+  exists (they're its outputs), but these are needed *to create* it, so a circular dependency
+  would result from merging them.
 - A new Key Vault (`key_vault_name`, RBAC-authorized, in `Training-Batch-6.23` by default)
   holding two secrets: `azureServiceConnection` (value `AzureTraining`) and
   `azureTrainingSpObjectId` (value `azure_training_sp_object_id` from your tfvars — persisted
@@ -196,7 +209,28 @@ commands run against"), so there's no actual circularity — just re-use of the 
 The PAT and org URL only need to be exported in your shell for this one apply — nothing in this
 repo stores them.
 
-### 6. Azure DevOps environments and approval gate
+### 6. Pipeline for ongoing Library/Key Vault changes
+
+Step 5's local apply is the one-time bootstrap — it's what creates `todoapp-azure-connection`,
+so nothing in Azure DevOps has anything to authenticate with before that's done. After it, an
+optional pipeline (`devops-deploy.yml`) can take over for *ongoing* changes to
+`infra/terraform-devops` (e.g. adding a new environment, changing instance sizes) instead of
+running `terraform apply` locally every time:
+
+1. Upload a **Secure File** (Pipelines > Library > Secure files) named `todoapp-devops.tfvars`,
+   containing your filled-in `infra/terraform-devops/terraform.tfvars` — this stack's own tfvars
+   can't come from Library variables the way `infra-deploy.yml`'s do, since it's what creates
+   those variables; that would be circular. A Secure File is the exception here, not a step
+   backward.
+2. Grant the project's **Build Service** identity **Administrator** on Library security
+   (Project Settings > Pipelines > Library > Security) — the pipeline authenticates the
+   `azuredevops` provider with `$(System.AccessToken)` (a short-lived, pipeline-scoped token)
+   instead of a stored PAT, and that identity needs permission to create/update variable groups
+   for it to actually work.
+3. Create the `todoapp-devops` Environment (see step 7) — applying here touches RBAC and secrets,
+   not just app infra, so it's gated the same way production infra applies are.
+
+### 7. Azure DevOps environments and approval gate
 
 Promotion to production requires manual approval, enforced two ways — do both, they're not
 redundant:
@@ -206,34 +240,20 @@ redundant:
   actual deploy job. This always pauses the run and waits for anyone with pipeline access to
   click Resume — it works out of the box, but it isn't restricted to specific people.
 - **RBAC-restricted, requires one-time setup.** **Pipelines > Environments > New environment**,
-  create `todoapp-staging` and `todoapp-production` (resource type "None" — these are just
-  approval/audit anchors, not Kubernetes/VM resources). On `todoapp-production`, add an
-  **Approval check** (Approvals and checks > + > Approvals) naming the specific people/group
-  allowed to approve. This is the gate that actually restricts *who* can promote to production —
-  set it up before relying on this pipeline for anything real.
-
-### 7. Secure Files for the infra pipeline
-
-The infra pipeline needs the same `terraform.tfvars` / `backend.hcl` content you created locally
-in steps 1–2, but it can't read gitignored local files — so upload them as **Secure Files**
-instead (Pipelines > Library > Secure files > + Secure file), named exactly:
-
-| Secure file name | Content |
-| --- | --- |
-| `todoapp-staging.tfvars` | your filled-in `terraform.tfvars.staging.example` |
-| `todoapp-staging-backend.hcl` | your filled-in `backend.hcl.staging.example` |
-| `todoapp-production.tfvars` | your filled-in `terraform.tfvars.production.example` |
-| `todoapp-production-backend.hcl` | your filled-in `backend.hcl.production.example` |
-
-Skip this step if you plan to keep making infra changes via local `terraform apply` and don't
-need `infra-deploy.yml`.
+  create `todoapp-staging`, `todoapp-production`, and `todoapp-devops` (resource type "None" —
+  these are just approval/audit anchors, not Kubernetes/VM resources). On `todoapp-production`
+  and `todoapp-devops`, add an **Approval check** (Approvals and checks > + > Approvals) naming
+  the specific people/group allowed to approve. This is the gate that actually restricts *who*
+  can promote to production or change Library/Key Vault config — set it up before relying on
+  either pipeline for anything real.
 
 ### 8. Create the pipelines
 
-Create five pipelines in Azure DevOps, **build pipelines before their release pipeline** — each
+Create six pipelines in Azure DevOps, **build pipelines before their release pipeline** — each
 release pipeline's `resources.pipelines.source` references its build pipeline by name, so the
-build pipeline must already exist under that exact name first. `todoapp-infra-deploy` has no such
-dependency and can be created any time after step 7.
+build pipeline must already exist under that exact name first. `todoapp-infra-deploy` and
+`todoapp-devops-deploy` have no such dependency, but each needs its own prerequisites from steps
+5–6 in place before its first real run.
 
 | Order | Pipeline name (must match exactly) | YAML file |
 | --- | --- | --- |
@@ -242,6 +262,7 @@ dependency and can be created any time after step 7.
 | 3 | `todoapp-backend-build` | `pipelines/backend-build.yml` |
 | 4 | `todoapp-backend-release` | `pipelines/backend-release.yml` |
 | — | `todoapp-infra-deploy` | `pipelines/infra-deploy.yml` |
+| — | `todoapp-devops-deploy` | `pipelines/devops-deploy.yml` |
 
 If you name the build pipelines something other than `todoapp-frontend-build` /
 `todoapp-backend-build`, update the `source:` value in the corresponding `*-release.yml` to match.
@@ -262,6 +283,9 @@ Push to `main`:
   **staging**, then plan against **production** and wait for approval before applying. Every
   apply uses the exact plan file its own plan stage produced — nothing gets re-planned right
   before applying.
+- Changes under `infra/terraform-devops/` trigger `todoapp-devops-deploy`: plan, then wait for
+  approval before applying — there's no staging/production split here, just a single gated
+  apply, since this stack manages Library/Key Vault config that both environments share.
 
 Scaling out (autoscale or manual) automatically pulls the current `latest.zip` on the new
 instance's first boot — no pipeline run needed.

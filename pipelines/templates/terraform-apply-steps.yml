@@ -1,12 +1,14 @@
 # Shared steps: download the plan file published by the matching plan stage and apply it
-# unmodified (never re-plan here - applying exactly what was reviewed is the point). Expects
-# $(azureServiceConnection) from whichever variable group the calling job loaded, and a
-# pipeline-level $(terraformVersion) variable.
+# unmodified (never re-plan here - applying exactly what was reviewed is the point).
+# backend.hcl is regenerated from Library variables here too, since apply runs in a fresh job/
+# agent that doesn't share a filesystem with the plan job.
+#
+# Expects, from whichever variable groups the calling job loaded: $(azureServiceConnection),
+# $(resourceGroupName), $(storageAccountName) - plus a pipeline-level $(terraformVersion)
+# variable.
 
 parameters:
   - name: environmentName
-    type: string
-  - name: backendHclSecureFile
     type: string
   - name: artifactName
     type: string
@@ -15,12 +17,6 @@ steps:
   - download: current
     artifact: ${{ parameters.artifactName }}
     displayName: 'Download plan file'
-
-  - task: DownloadSecureFile@1
-    name: backendHclFile
-    displayName: 'Download backend.hcl (${{ parameters.environmentName }})'
-    inputs:
-      secureFile: ${{ parameters.backendHclSecureFile }}
 
   - script: |
       set -euo pipefail
@@ -31,9 +27,14 @@ steps:
 
   - script: |
       set -euo pipefail
-      cp "$(backendHclFile.secureFilePath)" infra/terraform/backend.hcl
+      cat > infra/terraform/backend.hcl <<EOF
+      resource_group_name  = "$(resourceGroupName)"
+      storage_account_name = "$(storageAccountName)"
+      container_name       = "tfstate"
+      key                   = "todoapp-${{ parameters.environmentName }}.tfstate"
+      EOF
       cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" infra/terraform/tfplan
-    displayName: 'Stage backend config and plan file'
+    displayName: 'Generate backend config and stage plan file'
 
   - task: AzureCLI@2
     displayName: 'terraform init && terraform apply'

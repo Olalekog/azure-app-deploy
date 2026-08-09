@@ -13,13 +13,13 @@
 # "todoapp-azure-connection" group (see azureServiceConnection in frontend-release.yml's header),
 # and the Environments already set up for the app pipelines.
 #
-# Additionally requires four Secure Files (Pipelines > Library > Secure files) - these carry
-# real values that must never be committed to git, mirroring the local
-# terraform.tfvars.<env>.example / backend.hcl.<env>.example workflow:
-#   todoapp-staging.tfvars          - filled-in copy of terraform.tfvars.staging.example
-#   todoapp-staging-backend.hcl     - filled-in copy of backend.hcl.staging.example
-#   todoapp-production.tfvars       - filled-in copy of terraform.tfvars.production.example
-#   todoapp-production-backend.hcl  - filled-in copy of backend.hcl.production.example
+# Additionally requires "todoapp-staging-tfvars" / "todoapp-production-tfvars" (also managed by
+# infra/terraform-devops - see tfvars_groups.tf there) - these hold the input values used to
+# generate infra/terraform/terraform.tfvars and backend.hcl at runtime (see
+# templates/terraform-plan-steps.yml and templates/terraform-apply-steps.yml), replacing what
+# used to be Secure File uploads. Kept separate from todoapp-staging/todoapp-production because
+# those hold the app infra's *outputs* (read from remote state, so they can't exist until that
+# infra already does), while these hold *inputs* needed to create it in the first place.
 #
 # Bootstrap note: unlike a setup where Terraform creates its own resource group, this stack
 # deploys into a pre-existing resource group and reuses a pre-existing storage account (see
@@ -48,13 +48,12 @@ stages:
       vmImage: ubuntu-latest
     variables:
     - group: todoapp-staging
+    - group: todoapp-staging-tfvars
     - group: todoapp-azure-connection
     steps:
     - template: templates/terraform-plan-steps.yml
       parameters:
         environmentName: staging
-        tfvarsSecureFile: todoapp-staging.tfvars
-        backendHclSecureFile: todoapp-staging-backend.hcl
         artifactName: staging-tfplan
 
 - stage: ApplyStaging
@@ -68,6 +67,7 @@ stages:
       vmImage: ubuntu-latest
     variables:
     - group: todoapp-staging
+    - group: todoapp-staging-tfvars
     - group: todoapp-azure-connection
     strategy:
       runOnce:
@@ -76,7 +76,6 @@ stages:
           - template: templates/terraform-apply-steps.yml
             parameters:
               environmentName: staging
-              backendHclSecureFile: todoapp-staging-backend.hcl
               artifactName: staging-tfplan
 
 - stage: PlanProduction
@@ -88,13 +87,12 @@ stages:
       vmImage: ubuntu-latest
     variables:
     - group: todoapp-production
+    - group: todoapp-production-tfvars
     - group: todoapp-azure-connection
     steps:
     - template: templates/terraform-plan-steps.yml
       parameters:
         environmentName: production
-        tfvarsSecureFile: todoapp-production.tfvars
-        backendHclSecureFile: todoapp-production-backend.hcl
         artifactName: production-tfplan
 
 - stage: ApplyProduction
@@ -119,6 +117,7 @@ stages:
       vmImage: ubuntu-latest
     variables:
     - group: todoapp-production
+    - group: todoapp-production-tfvars
     - group: todoapp-azure-connection
     strategy:
       runOnce:
@@ -127,5 +126,4 @@ stages:
           - template: templates/terraform-apply-steps.yml
             parameters:
               environmentName: production
-              backendHclSecureFile: todoapp-production-backend.hcl
               artifactName: production-tfplan

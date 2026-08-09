@@ -1,31 +1,20 @@
-# Shared steps: stage that environment's tfvars/backend config from Secure Files, install
-# Terraform, run init + plan, and publish the plan file for the matching apply stage to consume.
-# Expects $(azureServiceConnection) from whichever variable group the calling job loaded, and a
-# pipeline-level $(terraformVersion) variable.
+# Shared steps: generate that environment's terraform.tfvars/backend.hcl from Library variables
+# (todoapp-<env>, todoapp-<env>-tfvars - see infra/terraform-devops), install Terraform, run
+# init + plan, and publish the plan file for the matching apply stage to consume.
+#
+# Expects, from whichever variable groups the calling job loaded: $(azureServiceConnection),
+# $(resourceGroupName), $(storageAccountName), $(existingVnetName), $(frontendSubnetPrefix),
+# $(backendSubnetPrefix), $(backendLbPrivateIp), $(adminUsername), $(adminSshPublicKey),
+# $(frontendInstanceCount), $(frontendInstanceMax), $(backendInstanceCount),
+# $(backendInstanceMax) - plus a pipeline-level $(terraformVersion) variable.
 
 parameters:
   - name: environmentName
-    type: string
-  - name: tfvarsSecureFile
-    type: string
-  - name: backendHclSecureFile
     type: string
   - name: artifactName
     type: string
 
 steps:
-  - task: DownloadSecureFile@1
-    name: tfvarsFile
-    displayName: 'Download terraform.tfvars (${{ parameters.environmentName }})'
-    inputs:
-      secureFile: ${{ parameters.tfvarsSecureFile }}
-
-  - task: DownloadSecureFile@1
-    name: backendHclFile
-    displayName: 'Download backend.hcl (${{ parameters.environmentName }})'
-    inputs:
-      secureFile: ${{ parameters.backendHclSecureFile }}
-
   - script: |
       set -euo pipefail
       curl -fsSL "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" -o /tmp/terraform.zip
@@ -35,9 +24,39 @@ steps:
 
   - script: |
       set -euo pipefail
-      cp "$(tfvarsFile.secureFilePath)" infra/terraform/terraform.tfvars
-      cp "$(backendHclFile.secureFilePath)" infra/terraform/backend.hcl
-    displayName: 'Stage tfvars and backend config'
+      cat > infra/terraform/terraform.tfvars <<EOF
+      project     = "todoapp"
+      environment = "${{ parameters.environmentName }}"
+
+      existing_resource_group_name  = "$(resourceGroupName)"
+      existing_storage_account_name = "$(storageAccountName)"
+      existing_vnet_name            = "$(existingVnetName)"
+
+      frontend_subnet_prefix = ["$(frontendSubnetPrefix)"]
+      backend_subnet_prefix  = ["$(backendSubnetPrefix)"]
+      backend_lb_private_ip  = "$(backendLbPrivateIp)"
+
+      admin_username       = "$(adminUsername)"
+      admin_ssh_public_key = "$(adminSshPublicKey)"
+
+      frontend_instance_count = $(frontendInstanceCount)
+      frontend_instance_max   = $(frontendInstanceMax)
+      backend_instance_count  = $(backendInstanceCount)
+      backend_instance_max    = $(backendInstanceMax)
+
+      tags = {
+        project     = "todoapp"
+        environment = "${{ parameters.environmentName }}"
+      }
+      EOF
+
+      cat > infra/terraform/backend.hcl <<EOF
+      resource_group_name  = "$(resourceGroupName)"
+      storage_account_name = "$(storageAccountName)"
+      container_name       = "tfstate"
+      key                   = "todoapp-${{ parameters.environmentName }}.tfstate"
+      EOF
+    displayName: 'Generate tfvars and backend config from Library variables'
 
   - task: AzureCLI@2
     displayName: 'terraform init && terraform plan'
