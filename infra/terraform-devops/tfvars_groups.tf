@@ -31,8 +31,9 @@ resource "azuredevops_variable_group" "staging_tfvars" {
     value = var.staging_tfvars.admin_username
   }
   variable {
-    name  = "adminSshPublicKey"
-    value = var.staging_tfvars.admin_ssh_public_key
+    name         = "adminSshPublicKey"
+    is_secret    = true
+    secret_value = var.staging_tfvars.admin_ssh_public_key
   }
   variable {
     name  = "frontendInstanceCount"
@@ -79,8 +80,9 @@ resource "azuredevops_variable_group" "production_tfvars" {
     value = var.production_tfvars.admin_username
   }
   variable {
-    name  = "adminSshPublicKey"
-    value = var.production_tfvars.admin_ssh_public_key
+    name         = "adminSshPublicKey"
+    is_secret    = true
+    secret_value = var.production_tfvars.admin_ssh_public_key
   }
   variable {
     name  = "frontendInstanceCount"

@@ -34,7 +34,7 @@ trigger:
     - main
   paths:
     include:
-    - infra/*
+    - infra/terraform
 
 variables:
   terraformVersion: '1.10.4'

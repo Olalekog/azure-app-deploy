@@ -2,20 +2,22 @@
 
 Architecture: two independently-scaled VM Scale Sets behind Standard Load Balancers.
 
+```mermaid
+flowchart TD
+    Internet(["Internet"]) -->|":80"| FLB["Frontend LB — public<br/>Standard SKU · probe: GET /health"]
+    FLB --> FVMSS["Frontend VMSS<br/>nginx serves React build<br/>proxies /api/* → backend LB<br/>autoscale 1–N (CPU &gt;70% / &lt;30%)"]
+    FVMSS -->|":8000"| BLB["Backend LB — internal, 10.20.2.4<br/>probe: GET /health"]
+    BLB --> BVMSS["Backend VMSS<br/>FastAPI/uvicorn · no public IP<br/>autoscale 1–N"]
+    BVMSS -->|"SMB mount<br/>/mnt/tododata"| Files[("Azure Files share \"tododata\"<br/>the JSON database")]
+
+    FRel[("Blob: frontend-releases-&lt;env&gt;")] -.->|"pull latest.zip<br/>via managed identity"| FVMSS
+    BRel[("Blob: backend-releases-&lt;env&gt;")] -.->|"pull latest.zip<br/>via managed identity"| BVMSS
 ```
-Internet
-   |
-   v
-Standard LB (public)  --80-->  Frontend VMSS (nginx serves React build, proxies /api/ -> backend LB)
-                                     |
-                                     v
-                      Standard LB (internal, 10.20.2.4) --8000--> Backend VMSS (FastAPI/uvicorn)
-                                                                        |
-                                                                        v
-                                                          Azure Files share "tododata"
-                                                          (mounted at /mnt/tododata on every
-                                                           backend instance - the JSON "database")
-```
+
+The backend NSG allows port 8000 only from the frontend subnet's address range and denies all
+other internet inbound — the dotted lines above are the redeploy path (each VMSS instance pulls
+its own tier's zip from blob storage using its own scoped managed identity, never the other
+tier's), not request traffic.
 
 Each tier has a separate **build** (CI) and **release** (CD) pipeline. The build pipeline
 compiles/packages the code and publishes it as a pipeline artifact. The release pipeline is
@@ -26,6 +28,31 @@ Production only runs after staging succeeds, gated by an approval check. Each VM
 pulls `latest.zip` from its container via managed identity (using `azcopy login --identity`) — on
 first boot (cloud-init) and again whenever the release pipeline calls `az vmss run-command invoke`
 after a new upload.
+
+```mermaid
+flowchart LR
+    subgraph Frontend
+        FPush(["push: frontend/*"]) --> FBuild["todoapp-frontend-build<br/>Build → Test → Publish"]
+        FBuild -->|"artifact:<br/>frontend-release"| FStage["Staging<br/>(auto)"]
+        FStage -->|"gate"| FProd["Production"]
+    end
+    subgraph Backend
+        BPush(["push: backend/*"]) --> BBuild["todoapp-backend-build<br/>Build → Test → Publish"]
+        BBuild -->|"artifact:<br/>backend-release"| BStage["Staging<br/>(auto)"]
+        BStage -->|"gate"| BProd["Production"]
+    end
+    subgraph Infra
+        IPush(["push: infra/terraform/*"]) --> IPlanS["Plan (staging)"]
+        IPlanS -->|"tfplan"| IApplyS["Apply (staging)<br/>(auto)"]
+        IApplyS --> IPlanP["Plan (production)"]
+        IPlanP -->|"gate"| IApplyP["Apply (production)<br/>applies same tfplan"]
+    end
+```
+
+Every "gate" above is two independent layers: a `ManualValidation` task in the YAML that always
+pauses the pipeline (a backstop, visible in code review, but passable by anyone with pipeline
+access), plus an RBAC-backed approval check on the target Environment (`todoapp-production`) that
+actually restricts *who* can approve, to `approver_object_id` — see step 5.
 
 Staging and production are two independent applies of the same Terraform stack, distinguished by
 the `environment` variable — but in this deployment both share **one pre-existing resource group,
@@ -231,6 +258,30 @@ the pipelines themselves, so nothing in Azure DevOps has anything to authenticat
 before that's done. After it, `todoapp-devops-deploy` (already created by step 5) can take over
 for *ongoing* changes to `infra/terraform-devops` (e.g. adding a new environment, changing
 instance sizes, adding a new approver) instead of running `terraform apply` locally every time.
+
+```mermaid
+flowchart LR
+    Local["Local machine<br/>terraform apply<br/>(one-time, step 5)"] -->|creates| KV["Key Vault<br/>3 secrets"]
+    KV --> AC["todoapp-azure-connection<br/>(Key Vault-linked)"]
+    Local -->|creates| Outputs["todoapp-staging /<br/>todoapp-production<br/>(app infra outputs)"]
+    Local -->|creates| Inputs["todoapp-staging-tfvars /<br/>todoapp-production-tfvars<br/>(app infra inputs)"]
+    Local -->|creates| Pipelines["6 pipeline defs +<br/>3 Environments + approval checks"]
+
+    AC --> Release["frontend/backend-release"]
+    Outputs --> Release
+    AC --> InfraDeploy["infra-deploy"]
+    Outputs --> InfraDeploy
+    Inputs --> InfraDeploy
+
+    AC -.->|"needed to authenticate —<br/>doesn't exist before step 5"| DevopsDeploy["todoapp-devops-deploy<br/>(ongoing changes only)"]
+```
+
+That dotted line is the chicken-and-egg problem this pipeline can't solve for itself: it reads
+`todoapp-azure-connection` to authenticate, but that group is one of the things only the step-5
+local apply creates — so it has nothing to run against until step 5 has completed at least once.
+If you point `todoapp-devops-deploy` at a project where step 5 hasn't run yet, expect it to fail
+with `Variable group todoapp-azure-connection could not be found` and (if the Secure File below
+hasn't been uploaded yet either) `secure file todoapp-devops.tfvars could not be found`.
 
 Two things remain manual for this specific pipeline — not because they're hard, but because
 automating them isn't safe or possible with what's available:
