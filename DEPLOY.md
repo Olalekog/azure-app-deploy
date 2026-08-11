@@ -8,7 +8,7 @@ flowchart TD
     FLB --> FVMSS["Frontend VMSS<br/>nginx serves React build<br/>proxies /api/* → backend LB<br/>autoscale 1–N (CPU &gt;70% / &lt;30%)"]
     FVMSS -->|":8000"| BLB["Backend LB — internal, 10.20.2.4<br/>probe: GET /health"]
     BLB --> BVMSS["Backend VMSS<br/>FastAPI/uvicorn · no public IP<br/>autoscale 1–N"]
-    BVMSS -->|"SMB mount<br/>/mnt/tododata"| Files[("Azure Files share \"tododata\"<br/>the JSON database")]
+    BVMSS -->|"SMB mount<br/>/mnt/tododata"| Files[("Azure Files share tododata<br/>the JSON database")]
 
     FRel[("Blob: frontend-releases-&lt;env&gt;")] -.->|"pull latest.zip<br/>via managed identity"| FVMSS
     BRel[("Blob: backend-releases-&lt;env&gt;")] -.->|"pull latest.zip<br/>via managed identity"| BVMSS
